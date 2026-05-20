@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BackgroundConfig, Memory, SyncConfig } from '../../../core/types';
+import type { BackgroundConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
 import { SVG_PATHS } from '../constants';
 
 const DEFAULT_SYNC_CONFIG: SyncConfig = {
@@ -14,6 +14,8 @@ type SyncStatus = 'idle' | 'testing' | 'syncing' | 'success' | 'error';
 
 export default function SettingsPage() {
   const [memoryCount, setMemoryCount] = useState(0);
+  const [customSkillCount, setCustomSkillCount] = useState(0);
+  const [presetCount, setPresetCount] = useState(0);
   const [version, setVersion] = useState('');
   const [syncConfig, setSyncConfig] = useState<SyncConfig>(DEFAULT_SYNC_CONFIG);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
@@ -29,10 +31,20 @@ export default function SettingsPage() {
 
   const bgPreview = bgType === 'url' ? bgUrl : bgImageData;
 
+  const loadCounts = async () => {
+    const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
+    setMemoryCount(memories?.length ?? 0);
+
+    const skills: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
+    const custom = skills?.filter(s => s.source === 'custom') ?? [];
+    setCustomSkillCount(custom.length);
+
+    const presets: SystemPromptPreset[] = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
+    setPresetCount(presets?.length ?? 0);
+  };
+
   useEffect(() => {
-    chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }).then((list: Memory[]) => {
-      setMemoryCount(list?.length ?? 0);
-    });
+    loadCounts();
     chrome.runtime.sendMessage({ type: 'GET_CONFIG' }).then((cfg: { version: string }) => {
       setVersion(cfg?.version ?? '');
     });
@@ -192,8 +204,7 @@ export default function SettingsPage() {
         setSyncConfig((prev) => ({ ...prev, lastSyncAt: result.lastSyncAt }));
         setSyncStatus('success');
         setSyncMessage('同步完成');
-        const list: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
-        setMemoryCount(list?.length ?? 0);
+        loadCounts();
       } else {
         throw new Error(result?.error || '同步失败');
       }
@@ -201,11 +212,23 @@ export default function SettingsPage() {
 
   const handleExport = async () => {
     const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
-    const blob = new Blob([JSON.stringify(memories, null, 2)], { type: 'application/json' });
+    const skills: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
+    const customSkills = skills?.filter(s => s.source === 'custom') ?? [];
+    const presets: SystemPromptPreset[] = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
+
+    const exportData = {
+      type: 'deepseek_pp_backup',
+      version: '1.0.0',
+      memories,
+      skills: customSkills,
+      presets,
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `WebTool-DeepSeek-memories-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `WebTool-DeepSeek-data-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -219,26 +242,73 @@ export default function SettingsPage() {
       if (!file) return;
       const text = await file.text();
       try {
-        const memories: Memory[] = JSON.parse(text);
-        for (const mem of memories) {
+        const parsed = JSON.parse(text);
+        
+        let memoriesToImport: Memory[] = [];
+        let skillsToImport: Skill[] = [];
+        let presetsToImport: SystemPromptPreset[] = [];
+
+        if (Array.isArray(parsed)) {
+          memoriesToImport = parsed;
+        } else if (parsed && parsed.type === 'deepseek_pp_backup') {
+          memoriesToImport = parsed.memories ?? [];
+          skillsToImport = parsed.skills ?? [];
+          presetsToImport = parsed.presets ?? [];
+        } else {
+          throw new Error('未知的 JSON 备份格式');
+        }
+
+        // Import memories
+        for (const mem of memoriesToImport) {
           const { id, createdAt, updatedAt, accessCount, lastAccessedAt, ...rest } = mem;
           await chrome.runtime.sendMessage({ type: 'SAVE_MEMORY', payload: rest });
         }
-        setMemoryCount((c) => c + memories.length);
-      } catch {
-        alert('JSON 格式错误');
+
+        // Import custom skills
+        for (const skill of skillsToImport) {
+          await chrome.runtime.sendMessage({ type: 'SAVE_SKILL', payload: skill });
+        }
+
+        // Import presets
+        for (const preset of presetsToImport) {
+          await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
+        }
+
+        alert('导入成功');
+        loadCounts();
+      } catch (e) {
+        alert('导入失败: ' + (e as Error).message);
       }
     };
     input.click();
   };
 
   const handleClearAll = async () => {
-    if (!confirm('确定要清除所有记忆吗？此操作不可撤销。')) return;
+    if (!confirm('确定要清除所有数据（记忆、自定义 Skill、系统预设）吗？此操作不可撤销。')) return;
+    
+    // Clear memories
     const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
     for (const mem of memories) {
-      await chrome.runtime.sendMessage({ type: 'DELETE_MEMORY', payload: { id: mem.id } });
+      if (mem.id !== undefined) {
+        await chrome.runtime.sendMessage({ type: 'DELETE_MEMORY', payload: { id: mem.id } });
+      }
     }
-    setMemoryCount(0);
+
+    // Clear custom skills
+    const skills: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
+    const custom = skills.filter((s) => s.source === 'custom');
+    for (const s of custom) {
+      await chrome.runtime.sendMessage({ type: 'DELETE_SKILL', payload: { name: s.name } });
+    }
+
+    // Clear presets
+    const presets: SystemPromptPreset[] = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
+    for (const p of presets) {
+      await chrome.runtime.sendMessage({ type: 'DELETE_PRESET', payload: { id: p.id } });
+    }
+
+    loadCounts();
+    alert('所有数据已清除');
   };
 
   const formatTime = (ts: number | null) => {
@@ -548,11 +618,25 @@ export default function SettingsPage() {
           数据管理
         </h2>
 
-        <div className="ds-surface-panel rounded-xl p-4">
-          <div className="flex justify-between items-center text-sm">
+        <div className="ds-surface-panel rounded-xl p-4 space-y-3">
+          <div className="flex justify-between items-center text-xs">
             <span style={{ color: 'var(--ds-text-secondary)' }}>记忆总数</span>
-            <span className="text-lg font-semibold" style={{ color: 'var(--ds-blue)' }}>
-              {memoryCount}
+            <span className="font-semibold" style={{ color: 'var(--ds-blue)' }}>
+              {memoryCount} 条
+            </span>
+          </div>
+          <div className="border-t border-dashed" style={{ borderColor: 'var(--ds-border)' }} />
+          <div className="flex justify-between items-center text-xs">
+            <span style={{ color: 'var(--ds-text-secondary)' }}>自定义 Skill</span>
+            <span className="font-semibold" style={{ color: 'var(--ds-blue)' }}>
+              {customSkillCount} 个
+            </span>
+          </div>
+          <div className="border-t border-dashed" style={{ borderColor: 'var(--ds-border)' }} />
+          <div className="flex justify-between items-center text-xs">
+            <span style={{ color: 'var(--ds-text-secondary)' }}>系统预设</span>
+            <span className="font-semibold" style={{ color: 'var(--ds-blue)' }}>
+              {presetCount} 个
             </span>
           </div>
         </div>
@@ -565,7 +649,7 @@ export default function SettingsPage() {
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d={SVG_PATHS.download} />
             </svg>
-            导出记忆
+            导出备份
           </button>
           <button
             onClick={handleImport}
@@ -574,7 +658,7 @@ export default function SettingsPage() {
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d={SVG_PATHS.upload} />
             </svg>
-            导入记忆
+            导入备份
           </button>
         </div>
 
@@ -582,7 +666,7 @@ export default function SettingsPage() {
           onClick={handleClearAll}
           className="ds-btn-danger w-full py-2.5 text-xs font-medium rounded-lg transition-all duration-150"
         >
-          清除所有记忆
+          清除所有数据
         </button>
       </section>
 
