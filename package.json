@@ -23,7 +23,12 @@
     "@types/react-dom": "^19.2.3",
     "@wxt-dev/module-react": "^1.1.5",
     "typescript": "^5.9.3",
-    "wxt": "^0.20.25"
+    "wxt": "^0.20.26"
+  },
+  "pnpm": {
+    "overrides": {
+      "@webext-core/fake-browser": "^1.4.1"
+    }
   },
   "packageManager": "pnpm@11.0.9+sha512.34ce82e6780233cf9cad8685029a8f81d2e06196c5a9bad98879f7424940c6817c4e4524fb7d38b8553ceed48b9758b8ebaf1abd3600c232c4c8cf7366086f38"
 }
