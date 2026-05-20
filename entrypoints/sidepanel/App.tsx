@@ -34,7 +34,7 @@ export default function App() {
           </h1>
         </div>
         <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ color: 'var(--ds-text-tertiary)', background: 'var(--ds-surface)' }}>
-          v0.1.1
+          v0.2.0
         </span>
       </header>
 
