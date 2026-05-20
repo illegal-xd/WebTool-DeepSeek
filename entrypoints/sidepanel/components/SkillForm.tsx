@@ -58,6 +58,28 @@ export default function SkillForm({ initialSkill, onSave, onCancel, onWidthChang
     );
   };
 
+  const handleSelectAllFiltered = () => {
+    const filteredIds = filteredMemories
+      .map((m) => m.id)
+      .filter((id): id is number => id !== undefined);
+    setSelectedMemoryIds((prev) => {
+      const next = [...prev];
+      filteredIds.forEach((id) => {
+        if (!next.includes(id)) {
+          next.push(id);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleClearFiltered = () => {
+    const filteredIds = filteredMemories
+      .map((m) => m.id)
+      .filter((id): id is number => id !== undefined);
+    setSelectedMemoryIds((prev) => prev.filter((id) => !filteredIds.includes(id)));
+  };
+
   const filteredMemories = memories.filter(m => {
     // Type Filter
     if (filter !== 'all' && m.type !== filter) return false;
@@ -162,6 +184,34 @@ export default function SkillForm({ initialSkill, onSave, onCancel, onWidthChang
         <div className="w-[320px] border-l flex flex-col p-4 bg-gray-50/50 dark:bg-zinc-900/10" style={{ borderColor: 'var(--ds-border)' }}>
           <div className="flex items-center justify-between text-xs font-semibold pb-1 border-b border-dashed mb-3" style={{ color: 'var(--ds-text-secondary)', borderColor: 'var(--ds-border)' }}>
             <span>选择要注入的记忆 ({selectedMemoryIds.length}/{memories.length})</span>
+            {filteredMemories.length > 0 && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleSelectAllFiltered}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-full transition-all duration-150 cursor-pointer hover:brightness-95 active:scale-95 border border-solid"
+                  style={{
+                    color: 'var(--ds-blue)',
+                    background: 'var(--ds-blue-light)',
+                    borderColor: 'rgba(77, 107, 254, 0.25)',
+                  }}
+                >
+                  全选
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearFiltered}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-full transition-all duration-150 cursor-pointer hover:brightness-95 active:scale-95 border border-solid"
+                  style={{
+                    color: 'var(--ds-danger)',
+                    background: 'var(--ds-danger-bg)',
+                    borderColor: 'var(--ds-danger-border)',
+                  }}
+                >
+                  清除
+                </button>
+              </div>
+            )}
           </div>
 
           <input

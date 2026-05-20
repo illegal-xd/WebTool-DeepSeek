@@ -63,6 +63,8 @@ export interface SystemPromptPreset {
   content: string;
   createdAt: number;
   updatedAt: number;
+  memoryEnabled?: boolean;
+  memoryIds?: number[];
 }
 
 export interface DeepSeekRequest {

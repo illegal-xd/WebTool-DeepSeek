@@ -8,6 +8,7 @@ export default function PresetPage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<SystemPromptPreset | undefined>();
+  const [isFormWide, setIsFormWide] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
@@ -38,6 +39,7 @@ export default function PresetPage() {
     await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
     setShowForm(false);
     setEditing(undefined);
+    setIsFormWide(false);
     load();
   };
 
@@ -70,6 +72,7 @@ export default function PresetPage() {
     if (editing?.id === id) {
       setEditing(undefined);
       setShowForm(false);
+      setIsFormWide(false);
     }
     await chrome.runtime.sendMessage({ type: 'DELETE_PRESET', payload: { id } });
     load();
@@ -95,6 +98,7 @@ export default function PresetPage() {
   const handleCancel = () => {
     setShowForm(false);
     setEditing(undefined);
+    setIsFormWide(false);
   };
 
   return (
@@ -143,9 +147,15 @@ export default function PresetPage() {
 
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="w-full max-w-md">
+          <div className={`w-full transition-all duration-300 ${isFormWide ? 'max-w-3xl' : 'max-w-md'}`}>
             <div className="animate-slide-down">
-              <PresetForm initial={editing} onSave={handleSave} onCancel={handleCancel} />
+              <PresetForm
+                key={editing ? `edit-${editing.id}` : 'new'}
+                initial={editing}
+                onSave={handleSave}
+                onCancel={handleCancel}
+                onWidthChange={setIsFormWide}
+              />
             </div>
           </div>
         </div>
