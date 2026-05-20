@@ -63,6 +63,12 @@
   <img src="assets/screenshot-operation-save.png" width="600" alt="优化数据管理">
 </p>
 
+## 待优化
+
+- 增加与DeepSeek交流时用户对话框内容折叠【配置的Skill与预设】，防止提示词太长导致上下滚动操作加巨
+- 增加暗黑主题适配
+- 增加一键打包成完整的插件模式，下载即用
+
 ## 安装
 
 ### 从源码构建
