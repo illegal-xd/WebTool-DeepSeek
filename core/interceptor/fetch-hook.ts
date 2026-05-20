@@ -143,7 +143,20 @@ function modifyRequestBody(bodyStr: string): string | null {
     }
   }
 
-  const { augmented, usedMemoryIds } = buildAugmentedPrompt(originalPrompt, hookState.memories, {
+  let targetMemories = hookState.memories;
+  if (hookState.activePreset) {
+    if (hookState.activePreset.memoryEnabled === true) {
+      if (hookState.activePreset.memoryIds && hookState.activePreset.memoryIds.length > 0) {
+        targetMemories = hookState.memories.filter(
+          (m) => m.id !== undefined && hookState.activePreset!.memoryIds!.includes(m.id)
+        );
+      }
+    } else if (hookState.activePreset.memoryEnabled === false) {
+      targetMemories = [];
+    }
+  }
+
+  const { augmented, usedMemoryIds } = buildAugmentedPrompt(originalPrompt, targetMemories, {
     thinkingEnabled,
   });
   body.prompt = presetPrefix + augmented;

@@ -16,13 +16,25 @@ export default function PresetCard({ preset, isActive, onActivate, onDeactivate,
       style={isActive ? { borderColor: 'var(--ds-blue)', borderWidth: '1.5px' } : undefined}
     >
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
             {preset.name}
           </span>
           {isActive && (
             <span className="ds-badge-success inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full font-medium">
               生效中
+            </span>
+          )}
+          {preset.memoryEnabled && (
+            <span
+              className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+              style={{
+                backgroundColor: 'var(--ds-blue-glow)',
+                color: 'var(--ds-blue)',
+                border: '1px solid rgba(77,107,254,0.15)'
+              }}
+            >
+              记忆注入 ({preset.memoryIds?.length ?? 0})
             </span>
           )}
         </div>
