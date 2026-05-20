@@ -52,10 +52,10 @@
 
 ## 魔改优化
 
-[x] 优化了新增、编辑表单样式、操作
-[x] 内置 Skill 增加折叠展开能力、自定义 Skill 现在可以手动编辑
-[x] 新增独立记忆能力选择列表、可搜索
-[x] 数据管理导入导出新增自定义 Skill 与预设
+✅ 优化了新增、编辑表单样式、操作
+✅ 内置 Skill 增加折叠展开能力、自定义 Skill 现在可以手动编辑
+✅ 新增独立记忆能力选择列表、可搜索
+✅ 数据管理导入导出新增自定义 Skill 与预设
 
 <p align="center">
   <img src="assets/screenshot-operation-mode.png" width="600" alt="优化">
