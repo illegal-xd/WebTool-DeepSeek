@@ -41,6 +41,7 @@ export interface Skill {
   instructions: string;
   source: SkillSource;
   memoryEnabled: boolean;
+  memoryIds?: number[];
   metadata?: Record<string, string>;
 }
 

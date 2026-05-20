@@ -1,5 +1,5 @@
 import { DEEPSEEK_API_URL, PRESET_REINJECTION_INTERVAL } from '../constants';
-import type { Memory, ModelType, SystemPromptPreset, ToolCall } from '../types';
+import type { Memory, ModelType, SystemPromptPreset, ToolCall, Skill } from '../types';
 import { buildAugmentedPrompt } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
@@ -9,7 +9,7 @@ const API_PATH = new URL(DEEPSEEK_API_URL).pathname;
 
 interface HookState {
   memories: Memory[];
-  skills: Array<{ name: string; instructions: string; memoryEnabled: boolean }>;
+  skills: Skill[];
   activePreset: SystemPromptPreset | null;
   modelType: ModelType;
   messageCount: number;
@@ -122,7 +122,13 @@ function modifyRequestBody(bodyStr: string): string | null {
       const anyMemoryEnabled = resolved.memoryEnabled;
 
       if (anyMemoryEnabled) {
-        const { augmented } = buildAugmentedPrompt(prompt, hookState.memories, { thinkingEnabled });
+        let targetMemories = hookState.memories;
+        if (resolved.memoryIds && resolved.memoryIds.length > 0) {
+          targetMemories = hookState.memories.filter((m) => m.id !== undefined && resolved.memoryIds!.includes(m.id));
+        } else if (resolved.memoryIds) {
+          targetMemories = [];
+        }
+        const { augmented } = buildAugmentedPrompt(prompt, targetMemories, { thinkingEnabled });
         prompt = augmented;
       } else if (hookState.memories.length > 0) {
         const { augmented } = buildAugmentedPrompt(prompt, hookState.memories, {
@@ -152,6 +158,7 @@ function modifyRequestBody(bodyStr: string): string | null {
 interface ResolvedSkills {
   combinedPrompt: string;
   memoryEnabled: boolean;
+  memoryIds?: number[];
 }
 
 function wrapUserInput(instructions: string, userInput: string): string {
@@ -168,11 +175,22 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
     if (secondSkill) {
       const userArgs = secondInvocation.args;
       const combinedInstructions = primarySkill.instructions + '\n\n---\n\n' + secondSkill.instructions;
+      
+      const memoryIds: number[] = [];
+      if (primarySkill.memoryEnabled && primarySkill.memoryIds) {
+        memoryIds.push(...primarySkill.memoryIds);
+      }
+      if (secondSkill.memoryEnabled && secondSkill.memoryIds) {
+        memoryIds.push(...secondSkill.memoryIds);
+      }
+      const uniqueMemoryIds = Array.from(new Set(memoryIds));
+
       return {
         combinedPrompt: userArgs
           ? wrapUserInput(combinedInstructions, userArgs)
           : combinedInstructions,
         memoryEnabled: primarySkill.memoryEnabled || secondSkill.memoryEnabled,
+        memoryIds: uniqueMemoryIds,
       };
     }
   }
@@ -182,6 +200,7 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
       ? wrapUserInput(primarySkill.instructions, args)
       : primarySkill.instructions,
     memoryEnabled: primarySkill.memoryEnabled,
+    memoryIds: primarySkill.memoryEnabled ? primarySkill.memoryIds || [] : [],
   };
 }
 

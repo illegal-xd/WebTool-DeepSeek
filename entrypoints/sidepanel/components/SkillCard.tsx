@@ -3,6 +3,7 @@ import { SVG_PATHS } from '../constants';
 
 interface Props {
   skill: Skill;
+  onEdit?: () => void;
   onDelete?: () => void;
 }
 
@@ -12,7 +13,7 @@ const SOURCE_LABELS: Record<string, { text: string; className: string }> = {
   custom: { text: '自定义', className: 'ds-badge-warning' },
 };
 
-export default function SkillCard({ skill, onDelete }: Props) {
+export default function SkillCard({ skill, onEdit, onDelete }: Props) {
   const badge = SOURCE_LABELS[skill.source];
 
   return (
@@ -28,14 +29,24 @@ export default function SkillCard({ skill, onDelete }: Props) {
             </span>
           )}
         </div>
-        {onDelete && (
-          <button
-            onClick={onDelete}
-            className="ds-text-btn-delete text-[11px] px-2 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-all duration-150"
-          >
-            删除
-          </button>
-        )}
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all duration-150">
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              className="ds-text-btn-edit text-[11px] px-2 py-1 rounded-md transition-all duration-150"
+            >
+              编辑
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              className="ds-text-btn-delete text-[11px] px-2 py-1 rounded-md transition-all duration-150"
+            >
+              删除
+            </button>
+          )}
+        </div>
       </div>
       <p className="text-xs mt-1.5 leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
         {skill.description}

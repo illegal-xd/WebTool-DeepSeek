@@ -30,11 +30,11 @@ export default function App() {
             D+
           </div>
           <h1 className="text-[15px] font-semibold" style={{ color: 'var(--ds-text)' }}>
-            DeepSeek++
+            WebTool-DeepSeek
           </h1>
         </div>
         <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ color: 'var(--ds-text-tertiary)', background: 'var(--ds-surface)' }}>
-          v0.1.0
+          v0.1.1
         </span>
       </header>
 

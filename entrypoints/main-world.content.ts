@@ -12,21 +12,21 @@ export default defineContentScript({
     updateHookState({
       onToolCall(call: ToolCall) {
         window.postMessage({
-          source: 'deepseek-pp-main',
+          source: 'WebTool-DeepSeek-main',
           type: 'TOOL_CALL',
           data: call,
         });
       },
       onResponseComplete(fullText: string) {
         window.postMessage({
-          source: 'deepseek-pp-main',
+          source: 'WebTool-DeepSeek-main',
           type: 'RESPONSE_COMPLETE',
           text: fullText,
         });
       },
       onMemoriesUsed(ids: number[]) {
         window.postMessage({
-          source: 'deepseek-pp-main',
+          source: 'WebTool-DeepSeek-main',
           type: 'MEMORIES_USED',
           ids,
         });
@@ -34,7 +34,7 @@ export default defineContentScript({
     });
 
     window.addEventListener('message', (event) => {
-      if (event.data?.source !== 'deepseek-pp-content') return;
+      if (event.data?.source !== 'WebTool-DeepSeek-content') return;
 
       switch (event.data.type) {
         case 'SYNC_STATE': {

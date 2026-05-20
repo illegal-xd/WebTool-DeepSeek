@@ -21,6 +21,19 @@ export default function PresetPage() {
 
   useEffect(() => { load(); }, []);
 
+  useEffect(() => {
+    const mainEl = document.querySelector('main');
+    if (!mainEl) return;
+    if (showForm) {
+      mainEl.style.overflowY = 'hidden';
+    } else {
+      mainEl.style.overflowY = 'auto';
+    }
+    return () => {
+      mainEl.style.overflowY = 'auto';
+    };
+  }, [showForm]);
+
   const handleSave = async (preset: SystemPromptPreset) => {
     await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
     setShowForm(false);
@@ -54,6 +67,10 @@ export default function PresetPage() {
   };
 
   const handleDelete = async (id: string) => {
+    if (editing?.id === id) {
+      setEditing(undefined);
+      setShowForm(false);
+    }
     await chrome.runtime.sendMessage({ type: 'DELETE_PRESET', payload: { id } });
     load();
   };
@@ -82,11 +99,19 @@ export default function PresetPage() {
 
   return (
     <div className="p-4 space-y-4">
-      <div className="flex items-center justify-between">
+      <div
+        className="sticky top-0 z-10 flex items-center justify-between border-b"
+        style={{
+          backgroundColor: 'var(--ds-bg)',
+          borderColor: 'var(--ds-border)',
+          margin: '-16px -16px 8px -16px',
+          padding: '12px 16px',
+        }}
+      >
         <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
           系统提示词预设
         </h2>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 shrink-0">
           <input
             ref={fileInputRef}
             type="file"
@@ -117,8 +142,12 @@ export default function PresetPage() {
       </div>
 
       {showForm && (
-        <div className="animate-slide-down">
-          <PresetForm initial={editing} onSave={handleSave} onCancel={handleCancel} />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="w-full max-w-md">
+            <div className="animate-slide-down">
+              <PresetForm initial={editing} onSave={handleSave} onCancel={handleCancel} />
+            </div>
+          </div>
         </div>
       )}
 

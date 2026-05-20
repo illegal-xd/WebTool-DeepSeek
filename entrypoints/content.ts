@@ -35,7 +35,7 @@ export default defineContentScript({
     syncToMainWorld(memories ?? [], skills ?? [], activePreset, modelType);
 
     window.addEventListener('message', async (event) => {
-      if (event.data?.source !== 'deepseek-pp-main') return;
+      if (event.data?.source !== 'WebTool-DeepSeek-main') return;
 
       switch (event.data.type) {
         case 'TOOL_CALL': {
@@ -73,7 +73,7 @@ export default defineContentScript({
 
 function syncToMainWorld(memories: Memory[], skills: Skill[], activePreset: SystemPromptPreset | null, modelType: ModelType) {
   window.postMessage({
-    source: 'deepseek-pp-content',
+    source: 'WebTool-DeepSeek-content',
     type: 'SYNC_STATE',
     memories,
     skills,
@@ -194,13 +194,33 @@ function placeCardForCall(card: HTMLElement): boolean {
   const parent = first.parentNode;
   if (!parent) return false;
 
-  parent.insertBefore(card, first);
-  for (const el of group) el.remove();
+  // Check if a tool card is already placed before the first element of this group
+  let hasCard = false;
+  let sibling = first.previousElementSibling;
+  while (sibling) {
+    if (sibling.classList.contains(TOOL_CARD_CLASS)) {
+      hasCard = true;
+      break;
+    }
+    if (!sibling.classList.contains(DSML_HIDDEN_CLASS)) {
+      break;
+    }
+    sibling = sibling.previousElementSibling;
+  }
+
+  if (!hasCard) {
+    parent.insertBefore(card, first);
+  }
+
+  // Mark group elements as processed so they won't be picked up again
+  for (const el of group) {
+    el.setAttribute('data-dpp-processed', 'true');
+  }
   return true;
 }
 
 function getTopLevelHiddenElements(): HTMLElement[] {
-  const all = Array.from(document.querySelectorAll<HTMLElement>(`.${DSML_HIDDEN_CLASS}`));
+  const all = Array.from(document.querySelectorAll<HTMLElement>(`.${DSML_HIDDEN_CLASS}:not([data-dpp-processed])`));
   return all.filter((el) => !el.parentElement?.closest(`.${DSML_HIDDEN_CLASS}`));
 }
 
@@ -251,17 +271,11 @@ function isOnlyMeaningfulChild(child: HTMLElement, parent: HTMLElement): boolean
 }
 
 function cleanRemainingDSML() {
+  // Do not remove hidden elements to prevent React VDOM crashes.
+  // Instead, ensure they all have the hidden class.
   const hidden = Array.from(document.querySelectorAll<HTMLElement>(`.${DSML_HIDDEN_CLASS}`));
-  for (const el of hidden) el.remove();
-
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
-    if (node.parentElement?.closest(`.${TOOL_CARD_CLASS}`)) continue;
-    const text = node.textContent || '';
-    if (!text.includes(DSML)) continue;
-    const cleaned = stripToolCalls(text);
-    if (cleaned !== text) node.textContent = cleaned;
+  for (const el of hidden) {
+    el.classList.add(DSML_HIDDEN_CLASS);
   }
 }
 

@@ -22,9 +22,26 @@ export default function MemoryPage() {
 
   useEffect(() => { load(); }, []);
 
+  useEffect(() => {
+    const mainEl = document.querySelector('main');
+    if (!mainEl) return;
+    if (showForm) {
+      mainEl.style.overflowY = 'hidden';
+    } else {
+      mainEl.style.overflowY = 'auto';
+    }
+    return () => {
+      mainEl.style.overflowY = 'auto';
+    };
+  }, [showForm]);
+
   const filtered = filter === 'all' ? memories : memories.filter((m) => m.type === filter);
 
   const handleDelete = async (id: number) => {
+    if (editingMemory?.id === id) {
+      setEditingMemory(null);
+      setShowForm(false);
+    }
     await chrome.runtime.sendMessage({ type: 'DELETE_MEMORY', payload: { id } });
     load();
   };
@@ -43,6 +60,11 @@ export default function MemoryPage() {
     load();
   };
 
+  const handleCancel = () => {
+    setShowForm(false);
+    setEditingMemory(null);
+  };
+
   const handleEdit = (mem: Memory) => {
     setEditingMemory(mem);
     setShowForm(true);
@@ -58,7 +80,15 @@ export default function MemoryPage() {
 
   return (
     <div className="p-4 space-y-3">
-      <div className="flex items-center justify-between">
+      <div
+        className="sticky top-0 z-10 flex items-center justify-between border-b"
+        style={{
+          backgroundColor: 'var(--ds-bg)',
+          borderColor: 'var(--ds-border)',
+          margin: '-16px -16px 8px -16px',
+          padding: '12px 16px',
+        }}
+      >
         <div className="flex gap-1.5 flex-wrap">
           {FILTER_TYPES.map((t) => (
             <button
@@ -78,7 +108,7 @@ export default function MemoryPage() {
         </div>
         <button
           onClick={() => { setEditingMemory(null); setShowForm(!showForm); }}
-          className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1"
+          className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1 shrink-0"
         >
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -88,12 +118,17 @@ export default function MemoryPage() {
       </div>
 
       {showForm && (
-        <div className="animate-slide-down">
-          <MemoryForm
-            initial={editingMemory}
-            onSave={handleSave}
-            onCancel={() => { setShowForm(false); setEditingMemory(null); }}
-          />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="w-full max-w-md">
+            <div className="animate-slide-down">
+              <MemoryForm
+                key={editingMemory?.id ?? 'new'}
+                initial={editingMemory}
+                onSave={handleSave}
+                onCancel={handleCancel}
+              />
+            </div>
+          </div>
         </div>
       )}
 

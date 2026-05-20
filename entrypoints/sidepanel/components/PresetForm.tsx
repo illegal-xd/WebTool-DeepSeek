@@ -26,6 +26,9 @@ export default function PresetForm({ initial, onSave, onCancel }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="ds-form rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between text-xs font-semibold pb-1 border-b border-dashed" style={{ color: 'var(--ds-text-secondary)', borderColor: 'var(--ds-border)' }}>
+        <span>{initial ? '编辑系统预设' : '新建系统预设'}</span>
+      </div>
       <input
         type="text"
         placeholder="预设名称（如：代码助手、翻译专家）"
@@ -39,7 +42,7 @@ export default function PresetForm({ initial, onSave, onCancel }: Props) {
           系统提示词内容
         </label>
         <textarea
-          rows={8}
+          rows={12}
           placeholder={"你是一位专业的...\\n\\n## 核心原则\\n- ..."}
           value={content}
           onChange={(e) => setContent(e.target.value)}

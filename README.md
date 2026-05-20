@@ -1,6 +1,8 @@
-# DeepSeek++
+# WebTool-DeepSeek
 
 为 [DeepSeek](https://chat.deepseek.com) 网页版注入 **Agentic 记忆系统**、**Skill 技能系统** 和 **系统提示词预设** 的 Chrome 扩展。
+
+***本项目基于 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp) 魔改项目，欢迎大家体验原版***
 
 让 DeepSeek 拥有跨对话的长期记忆，通过 `/skill` 指令一键切换专家模式，并支持自定义系统提示词全局生效。
 
@@ -53,8 +55,8 @@
 ### 从源码构建
 
 ```bash
-git clone https://github.com/zhu1090093659/deepseek-pp.git
-cd deepseek-pp
+git clone https://github.com/illegal-xd/WebTool-DeepSeek.git
+cd WebTool-DeepSeek
 npm install
 npm run build
 ```

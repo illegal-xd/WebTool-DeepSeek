@@ -175,6 +175,15 @@ input::placeholder, textarea::placeholder {
   color: var(--ds-danger);
 }
 
+/* Inline edit text button (in SkillCard) */
+.ds-text-btn-edit {
+  color: var(--ds-text-tertiary);
+}
+.ds-text-btn-edit:hover {
+  background: var(--ds-blue-light);
+  color: var(--ds-blue);
+}
+
 /* Inline delete text button (in SkillCard) */
 .ds-text-btn-delete {
   color: var(--ds-text-tertiary);
