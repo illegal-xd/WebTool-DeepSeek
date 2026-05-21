@@ -1,5 +1,5 @@
 {
-  "name": "webtool-deepseek-chrome",
+  "name": "webtool-deepseek",
   "description": "Agentic memory & skill system for DeepSeek",
   "private": true,
   "version": "0.2.2",
