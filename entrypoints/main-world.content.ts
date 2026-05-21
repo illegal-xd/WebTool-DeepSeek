@@ -2,6 +2,7 @@ import { installFetchHook, updateHookState } from '../core/interceptor/fetch-hoo
 import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
+import { updatePresetTag } from '../core/ui/preset-tag';
 import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall } from '../core/types';
 
 export default defineContentScript({
@@ -51,6 +52,7 @@ export default defineContentScript({
           initSkillPopup(skills);
           initMemoryPopup(memories);
           initPresetPopup(presets);
+          updatePresetTag(activePreset);
           break;
         }
       }

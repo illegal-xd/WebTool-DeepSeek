@@ -2,8 +2,6 @@
 
 为 [DeepSeek](https://chat.deepseek.com) 网页版注入 **Agentic 记忆系统**、**Skill 技能系统** 和 **系统提示词预设** 的 Chrome 扩展。
 
-***本项目基于 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp) 魔改项目，欢迎大家体验原版***
-
 让 DeepSeek 拥有跨对话的长期记忆，通过 `/skill` 指令一键切换专家模式，并支持自定义系统提示词全局生效。
 
 ## 核心功能
@@ -74,7 +72,11 @@
   <img src="assets/screenshot-prompt-select.png" width="600" alt="优化预设提示词选择">
 </p>
 
-- [ ] 优化存在预设提示词时的用户感知 & 消息绑定提示词
+✅ 优化启用的预设提示词用户感知  
+<p align="center">
+  <img src="assets/screenshot-prompt-show.png" width="600" alt="优化预设提示词选择">
+</p>
+
 - [ ] 新增 Message 对话绑定预设提示词
 - [ ] 增加与DeepSeek交流时用户对话框内容折叠【配置的Skill与预设】，防止提示词太长导致上下滚动操作加巨
 - [ ] 增加暗黑主题适配
@@ -141,3 +143,7 @@ entrypoints/
 ## License
 
 MIT
+
+## 其他说明
+
+***本项目基于 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp) 项目魔改优化，欢迎大家体验原版***
