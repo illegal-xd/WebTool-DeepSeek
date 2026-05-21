@@ -6,6 +6,20 @@
 
 ## 核心功能
 
+### 类原生工具调用
+
+- XML 工具协议 — 在 prompt 中向模型注入 `memory_save`、`memory_update`、`memory_delete` 等工具 schema，模型按 `<tool_name>{JSON}</tool_name>` 输出调用请求
+- 流式拦截执行 — 扩展在 SSE 响应流中实时识别工具调用，自动转发给 Content Script 执行，不需要用户复制或手动确认
+- 隐藏原始调用 — 页面不会暴露 XML/JSON 工具块；工具调用会从正文、历史消息和 IndexedDB 缓存中清理
+- DeepSeek 观感 — 执行结果渲染成类似「已思考」的折叠区块
+- 多工具连续执行 — 同一条回复可以执行多次工具调用，适合把多个独立事实分别保存为多条记忆
+- 刷新后恢复 — 工具执行记录会短期持久化，并在刷新会话后恢复展示，避免刚执行完的工具状态消失
+- 历史兼容 — 新 XML 协议和旧 DSML 工具调用历史都能被解析、清理和恢复
+
+<p align="center">
+  <img src="assets/screenshot-memory-tool.png" width="600" alt="记忆工具调用" />
+</p>
+
 ### 记忆系统
 
 - **自动记忆** — AI 在对话中识别到关键信息时，通过 tool_call 自动保存为长期记忆
@@ -43,10 +57,18 @@
 扩展在 main world 中拦截 `fetch` 和 `XMLHttpRequest`，在请求发送到 DeepSeek API 前修改 prompt（注入记忆/技能指令），并解析 SSE 响应流以提取和处理 tool_call 指令。
 
 ```
-用户输入 → 拦截请求 → 注入预设 + 记忆 + 技能指令 → DeepSeek API
-                                                        ↓
-侧边栏 ← IndexedDB/Storage ← 提取 tool_call ← 解析 SSE 响应
+用户输入 → 拦截请求 → 注入预设 + 记忆 + 技能指令 + tools schema → DeepSeek API
+                                                                    ↓
+页面折叠区块 ← 执行结果持久化 ← Content Script 执行工具 ← SSE 流式解析/隐藏工具调用
+       ↓
+侧边栏 ← IndexedDB/Storage ← 记忆保存/更新/删除
 ```
+
+工具调用链路分为三层：
+
+1. Main World：拦截网络请求和响应流，收集完整回复，识别 XML 工具块，过滤页面可见文本。
+2. Content Script：接收工具调用，执行记忆增删改，渲染「已执行工具」折叠区块，并恢复刷新后的执行状态。
+3. Background：统一处理 SAVE_MEMORY、UPDATE_MEMORY、DELETE_MEMORY 等消息，持久化数据并广播状态更新。
 
 ## 魔改优化
 

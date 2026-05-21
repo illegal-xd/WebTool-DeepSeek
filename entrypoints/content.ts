@@ -5,6 +5,9 @@ const BLOCK_STYLE_ID = 'dpp-tool-block-css';
 const STORAGE_PREFIX = 'dpp_tool_exec_';
 
 let nextCallId = 0;
+let currentToolBlock: HTMLElement | null = null;
+/** Track raw text of tool calls already executed by TOOL_CALL handler */
+const resolvedCallRaws = new Set<string>();
 
 /**
  * Map of callId -> { call, block, promise } for tracking tool calls
@@ -49,34 +52,22 @@ export default defineContentScript({
           break;
         }
         case 'EXECUTE_TOOL_CALL': {
-          const call = event.data.data as ToolCall;
-          const callId = event.data.callId as number;
-	          const entry = pendingCallMap.get(callId);
-	          if (entry?.resolved) {
-	            window.postMessage({
-	              source: 'WebTool-DeepSeek-content',
-	              type: 'TOOL_CALL_RESULT',
-	              data: { ok: true, summary: '' },
-	              callId,
-	            });
-	            break;
+	          const call = event.data.data as ToolCall;
+	          // Execute if not already resolved by TOOL_CALL handler during streaming
+	          if (!resolvedCallRaws.has(call.raw)) {
+	            const result = await executeToolCall(call);
+	            resolvedCallRaws.add(call.raw);
 	          }
-	          const result = await executeToolCall(call);
-          // Update the matching block with actual result
-//           const entry = pendingCallMap.get(callId);
-          if (entry && !entry.resolved) {
-            entry.resolved = true;
-            updateToolBlockWithResult(entry.block, call, result);
-          }
-          window.postMessage({
-            source: 'WebTool-DeepSeek-content',
-            type: 'TOOL_CALL_RESULT',
-            data: result,
-            callId,
-          });
-          break;
-        }
-        case 'MEMORIES_USED': {
+	          window.postMessage({
+	            source: 'WebTool-DeepSeek-content',
+	            type: 'TOOL_CALL_RESULT',
+	            data: { ok: true, summary: call.name },
+	            callName: call.name,
+	          });
+	          break;
+	        }
+
+	        case 'MEMORIES_USED': {
           const ids = event.data.ids as number[];
           await chrome.runtime.sendMessage({ type: 'TOUCH_MEMORIES', payload: { ids } });
           break;
@@ -268,7 +259,29 @@ function addNewToolItem(block: HTMLElement, call: ToolCall, result: ToolCardResu
   body.appendChild(item);
 }
 
-function toggleBlockCollapse(block: HTMLElement) {
+function addExecutingToolItem(block: HTMLElement, call: ToolCall) {
+	  const body = block.querySelector('.dpp-tb-body');
+	  if (!body) return;
+
+	  const countEl = block.querySelector('.dpp-tb-count');
+	  if (countEl) {
+	    const count = parseInt(countEl.textContent || '1', 10) + 1;
+	    countEl.textContent = String(count);
+	  }
+
+	  const item = document.createElement('div');
+	  item.className = 'dpp-tb-item';
+	  item.innerHTML = `
+	    <div class="dpp-tb-dot-wrap">
+	                  <span class="dpp-tb-dot"></span>
+	    </div>
+	    <span class="dpp-tb-item-name">${escapeHtml(call.name)}</span>
+	    <span class="dpp-tb-item-summary">执行中...</span>
+	  `;
+	  body.appendChild(item);
+	}
+
+	function toggleBlockCollapse(block: HTMLElement) {
   const collapsed = block.getAttribute('data-collapsed') === 'true';
   block.setAttribute('data-collapsed', collapsed ? 'false' : 'true');
   block.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
@@ -295,8 +308,30 @@ function getLastAssistantMessage(): HTMLElement | null {
 }
 
 async function handleToolCall(call: ToolCall, callId: number) {
-  const lastMsg = getLastAssistantMessage();
+  // Reuse existing tool block for this conversation turn
+  if (currentToolBlock && document.contains(currentToolBlock)) {
+    addExecutingToolItem(currentToolBlock, call);
+    const entry = { call, block: currentToolBlock, callId, resolved: false };
+    pendingCallMap.set(callId, entry);
+    try {
+      const result = await executeToolCall(call);
+      if (!entry.resolved) {
+        entry.resolved = true;
+        resolvedCallRaws.add(call.raw);
+        updateToolBlockWithResult(currentToolBlock, call, result);
+      }
+    } catch {
+      // EXECUTE_TOOL_CALL flow will handle it
+    }
+    return;
+  }
+
+  // New conversation turn — clear previous tool call state
+	  pendingCallMap.clear();
+	  resolvedCallRaws.clear();
+	  const lastMsg = getLastAssistantMessage();
   const block = createToolBlock(call);
+  currentToolBlock = block;
 
   if (lastMsg) {
     lastMsg.appendChild(block);
@@ -313,6 +348,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
     const result = await executeToolCall(call);
     if (!entry.resolved) {
       entry.resolved = true;
+      resolvedCallRaws.add(call.raw);
       updateToolBlockWithResult(block, call, result);
     }
   } catch {
@@ -393,7 +429,7 @@ async function finalizeResponse() {
     // Manual collapse only
   });
 
-  pendingCallMap.clear();
+  currentToolBlock = null;
 
   if (hadToolCall) {
     persistToolExecutions();
