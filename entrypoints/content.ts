@@ -428,8 +428,8 @@ async function executeToolCall(call: ToolCall): Promise<ToolCardResult> {
           pinned: false,
         },
       });
-      // Return the memory name as the summary instead of generic "已保存"
-      return { ok: true, summary: payload.name || 'unnamed', detail: payload.name || '' };
+      const name = payload.name || 'unnamed';
+      return { ok: true, summary: '已保存', detail: `${name} · 已保存` };
     }
 
     if (call.name === 'memory_update') {
@@ -455,15 +455,18 @@ async function executeToolCall(call: ToolCall): Promise<ToolCardResult> {
           tags: payload.tags || existing.tags,
         },
       });
-      return { ok: true, summary: payload.name || existing.name, detail: payload.name || existing.name };
+      const name = payload.name || existing.name;
+      return { ok: true, summary: '已更新', detail: `${name} · 已更新` };
     }
 
     if (call.name === 'memory_delete') {
       const payload = call.payload as { id?: number };
       const id = Number(payload.id);
       if (!id) return { ok: false, summary: '删除失败', detail: '无效 ID' };
+      const existing = await chrome.runtime.sendMessage({ type: 'GET_MEMORY_BY_ID', payload: { id } });
       await chrome.runtime.sendMessage({ type: 'DELETE_MEMORY', payload: { id } });
-      return { ok: true, summary: '已删除', detail: `#${id}` };
+      const name = existing?.name || `#${id}`;
+      return { ok: true, summary: '已删除', detail: `${name} · 已删除` };
     }
 
     return { ok: true, summary: call.name, detail: call.name };
