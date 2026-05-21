@@ -14,7 +14,6 @@ stats.html
 stats-*.json
 .wxt
 web-ext.config.ts
-pnpm-lock.yaml
 
 # Editor directories and files
 .vscode/*
@@ -27,3 +26,6 @@ pnpm-lock.yaml
 *.sln
 *.sw?
 .playwright-mcp
+
+# Build artifacts
+*.zip

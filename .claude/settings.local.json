@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(rtk ls *)",
-      "Bash(rtk tsc *)"
+      "Bash(rtk tsc *)",
+      "Bash(rtk git *)"
     ]
   }
 }

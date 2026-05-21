@@ -8,6 +8,7 @@
     "dev": "wxt",
     "build": "wxt build",
     "zip": "wxt zip",
+    "package": "wxt zip && cp .output/chrome-mv3.zip ./WebTool-DeepSeek.zip",
     "compile": "tsc --noEmit",
     "postinstall": "wxt prepare"
   },
