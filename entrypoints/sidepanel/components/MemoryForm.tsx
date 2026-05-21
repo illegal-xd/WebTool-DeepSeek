@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import type { Memory, MemoryType } from '../../../core/types';
+import type { Memory, MemoryType, NewMemory } from '../../../core/types';
 import { MEMORY_TYPE_CONFIG } from '../constants';
 
 interface Props {
   initial?: Memory | null;
-  onSave: (mem: Omit<Memory, 'id' | 'createdAt' | 'updatedAt' | 'accessCount' | 'lastAccessedAt'>) => void;
+  onSave: (mem: NewMemory) => void;
   onCancel: () => void;
 }
 

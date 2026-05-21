@@ -2,7 +2,7 @@
   "name": "webtool-deepseek",
   "description": "Agentic memory & skill system for DeepSeek",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -22,6 +22,7 @@
   "devDependencies": {
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/chrome": "^0.0.313",
     "@wxt-dev/module-react": "^1.1.5",
     "typescript": "^5.9.3",
     "wxt": "^0.20.26"

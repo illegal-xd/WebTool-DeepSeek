@@ -1,11 +1,12 @@
 import { DEEPSEEK_API_URL, PRESET_REINJECTION_INTERVAL } from '../constants';
-import type { Memory, ModelType, SystemPromptPreset, ToolCall, Skill } from '../types';
+import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill } from '../types';
 import { buildAugmentedPrompt } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
 import { extractToolCalls } from './tool-parser';
 
 const API_PATH = new URL(DEEPSEEK_API_URL).pathname;
+const HISTORY_PATH = '/api/v0/chat/history_messages';
 
 interface HookState {
   memories: Memory[];
@@ -17,6 +18,8 @@ interface HookState {
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
   onMemoriesUsed: (ids: number[]) => void;
+  onToolCallExecuted: (call: ToolCall) => Promise<ToolCardResult>;
+  onToolCallsRestored: (records: ToolCallRestoreRecord[]) => void;
 }
 
 let hookState: HookState = {
@@ -29,32 +32,40 @@ let hookState: HookState = {
   onToolCall: () => {},
   onResponseComplete: () => {},
   onMemoriesUsed: () => {},
+  onToolCallExecuted: async () => ({ ok: true, summary: '已识别' }),
+  onToolCallsRestored: () => {},
 };
+
+let originalFetch: typeof window.fetch | null = null;
 
 export function updateHookState(partial: Partial<HookState>) {
   hookState = { ...hookState, ...partial };
 }
 
 export function installFetchHook() {
+  originalFetch = window.fetch;
   hookFetch();
   hookXHR();
+  hookHistoryFetch();
+  hookHistoryXHR();
+  hookIndexedDB();
 }
 
 function hookFetch() {
-  const originalFetch = window.fetch;
+  const savedFetch = window.fetch;
 
   window.fetch = async function (input: RequestInfo | URL, init?: RequestInit) {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
     if (!isChatCompletionURL(url) || !init?.body) {
-      return originalFetch.call(this, input, init);
+      return savedFetch.call(this, input, init);
     }
 
     const modified = modifyRequestBody(init.body as string);
-    if (!modified) return originalFetch.call(this, input, init);
+    if (!modified) return savedFetch.call(this, input, init);
 
     init = { ...init, body: modified };
-    return interceptFetchResponse(originalFetch.call(this, input, init));
+    return interceptFetchResponse(savedFetch.call(this, input, init));
   };
 }
 
@@ -63,12 +74,12 @@ function hookXHR() {
   const origOpen = XMLHttpRequest.prototype.open;
   const origSend = XMLHttpRequest.prototype.send;
 
-  XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...rest: any[]) {
+  XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]) {
     xhrUrls.set(this, typeof url === 'string' ? url : url.href);
-    return origOpen.call(this, method, url, ...rest);
+    return origOpen.apply(this, [method, url as string, ...rest] as Parameters<typeof origOpen>);
   };
 
-  XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+  XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
     const url = xhrUrls.get(this);
     if (url && isChatCompletionURL(url) && typeof body === 'string') {
       const modified = modifyRequestBody(body);
@@ -105,7 +116,7 @@ function modifyRequestBody(bodyStr: string): string | null {
   }
   hookState.messageCount++;
 
-  // Detect if the preset changed mid-conversation (e.g. via @ trigger)
+  // Detect if the preset changed mid-conversation
   const currentPresetId = hookState.activePreset?.id ?? null;
   const presetJustChanged = currentPresetId !== hookState._lastPresetId;
   if (presetJustChanged) {
@@ -142,7 +153,6 @@ function modifyRequestBody(bodyStr: string): string | null {
     if (resolved) {
       let prompt = resolved.combinedPrompt;
 
-      // Collect memory sources: skill config + active preset config
       const memorySources = collectMemorySources(resolved);
       const targetMemories = resolveTargetMemories(memorySources);
 
@@ -156,20 +166,17 @@ function modifyRequestBody(bodyStr: string): string | null {
     }
   }
 
-  // Determine which memories to inject based on preset configuration
   let targetMemories = hookState.memories;
   let identityOnly = false;
 
   if (hookState.activePreset) {
     if (hookState.activePreset.memoryEnabled === true) {
-      // Explicitly enabled: use specified memoryIds if provided, otherwise all
       if (hookState.activePreset.memoryIds && hookState.activePreset.memoryIds.length > 0) {
         targetMemories = hookState.memories.filter(
           (m) => m.id !== undefined && hookState.activePreset!.memoryIds!.includes(m.id)
         );
       }
     } else {
-      // Not explicitly enabled (false or undefined): no memories injected
       targetMemories = [];
     }
   }
@@ -187,19 +194,11 @@ function modifyRequestBody(bodyStr: string): string | null {
   return JSON.stringify(body);
 }
 
-/**
- * Collect memory configuration from skill resolution and active preset.
- * Returns: { useAll: true } if any source enables all memories,
- *          or { ids: Set<number> } for specific IDs,
- *          or { none: true } if no source enables memories.
- */
 function collectMemorySources(resolved: ResolvedSkills): MemorySourceResult {
   const sources: Array<{ enabled: boolean; ids?: number[] }> = [];
 
-  // Skill config
   sources.push({ enabled: resolved.memoryEnabled, ids: resolved.memoryIds });
 
-  // Active preset config
   if (hookState.activePreset) {
     sources.push({
       enabled: hookState.activePreset.memoryEnabled === true,
@@ -215,7 +214,6 @@ function collectMemorySources(resolved: ResolvedSkills): MemorySourceResult {
     if (!src.enabled) continue;
     anyEnabled = true;
     if (!src.ids || src.ids.length === 0) {
-      // Enabled but no specific IDs → use all memories
       useAll = true;
     } else {
       for (const id of src.ids) specificIds.add(id);
@@ -232,9 +230,6 @@ type MemorySourceResult =
   | { type: 'all' }
   | { type: 'ids'; ids: Set<number> };
 
-/**
- * Resolve target memories from collected sources, with deduplication.
- */
 function resolveTargetMemories(source: MemorySourceResult): Memory[] {
   switch (source.type) {
     case 'none':
@@ -269,17 +264,14 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
 
       const anyMemoryEnabled = primarySkill.memoryEnabled || secondSkill.memoryEnabled;
 
-      // Merge memory IDs; if either skill is enabled with no specific IDs → use all (return undefined)
       let mergedMemoryIds: number[] | undefined = undefined;
       if (anyMemoryEnabled) {
         const hasAllPrimary = primarySkill.memoryEnabled && (!primarySkill.memoryIds || primarySkill.memoryIds.length === 0);
         const hasAllSecond = secondSkill.memoryEnabled && (!secondSkill.memoryIds || secondSkill.memoryIds.length === 0);
 
         if (hasAllPrimary || hasAllSecond) {
-          // At least one wants all memories → use all
           mergedMemoryIds = undefined;
         } else {
-          // Both specify specific IDs → merge & deduplicate
           const idSet = new Set<number>();
           if (primarySkill.memoryEnabled && primarySkill.memoryIds) {
             for (const id of primarySkill.memoryIds) idSet.add(id);
@@ -306,12 +298,15 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
       ? wrapUserInput(primarySkill.instructions, args)
       : primarySkill.instructions,
     memoryEnabled: primarySkill.memoryEnabled,
-    // memoryIds: undefined means "all" when memoryEnabled is true
     memoryIds: primarySkill.memoryEnabled && primarySkill.memoryIds && primarySkill.memoryIds.length > 0
       ? primarySkill.memoryIds
       : undefined,
   };
 }
+
+// ─── XML Tool Stream Filter ──────────────────────────────────────
+// Detects <memory_save>, <memory_update>, <memory_delete> XML blocks
+// in SSE stream chunks and handles chunk-boundary truncation.
 
 function notifyNewToolCalls(fullText: string, alreadyNotified: number): number {
   const calls = extractToolCalls(fullText);
@@ -319,6 +314,13 @@ function notifyNewToolCalls(fullText: string, alreadyNotified: number): number {
     hookState.onToolCall(calls[i]);
   }
   return calls.length;
+}
+
+async function executeToolCalls(fullText: string): Promise<void> {
+  const calls = extractToolCalls(fullText);
+  for (const call of calls) {
+    await hookState.onToolCallExecuted(call);
+  }
 }
 
 async function interceptFetchResponse(responsePromise: Promise<Response>): Promise<Response> {
@@ -336,6 +338,8 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
     completed = true;
     notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
     hookState.onResponseComplete(fullText);
+    // Execute tool calls after response completes
+    executeToolCalls(fullText).catch(() => {});
   };
 
   const stream = new ReadableStream({
@@ -387,6 +391,7 @@ function setupXHRResponseInterceptor(xhr: XMLHttpRequest) {
     completed = true;
     notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
     hookState.onResponseComplete(fullText);
+    executeToolCalls(fullText).catch(() => {});
   };
 
   xhr.addEventListener('readystatechange', function () {
@@ -411,6 +416,195 @@ function setupXHRResponseInterceptor(xhr: XMLHttpRequest) {
   });
 }
 
+// ─── History API Intercept ─────────────────────────────────────────
+// Intercept /api/v0/chat/history_messages to strip tool calls from
+// stored message content, collecting restore records.
+
+function hookHistoryFetch() {
+  const savedFetch = window.fetch;
+
+  window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+    if (!url.includes(HISTORY_PATH)) {
+      return savedFetch.call(this, input, init);
+    }
+
+    return savedFetch.call(this, input, init).then(async (response) => {
+      const clone = response.clone();
+      try {
+        const json = await clone.json();
+        const { cleaned, records } = stripToolCallsFromHistory(json);
+        if (records.length > 0) {
+          hookState.onToolCallsRestored(records);
+        }
+        return new Response(JSON.stringify(cleaned), {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText,
+        });
+      } catch {
+        return response;
+      }
+    });
+  };
+}
+
+function hookHistoryXHR() {
+  const xhrUrls = new WeakMap<XMLHttpRequest, string>();
+  const origOpen = XMLHttpRequest.prototype.open;
+  const origSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]) {
+    xhrUrls.set(this, typeof url === 'string' ? url : url.href);
+    return origOpen.apply(this, [method, url as string, ...rest] as Parameters<typeof origOpen>);
+  };
+
+  XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+    const url = xhrUrls.get(this);
+    if (url && url.includes(HISTORY_PATH)) {
+      const origOnreadystatechange = this.onreadystatechange;
+      this.onreadystatechange = function (this: XMLHttpRequest, ev: Event) {
+        if (this.readyState === 4) {
+          try {
+            const json = JSON.parse(this.responseText);
+            const { cleaned, records } = stripToolCallsFromHistory(json);
+            if (records.length > 0) {
+              hookState.onToolCallsRestored(records);
+            }
+            Object.defineProperty(this, 'responseText', {
+              value: JSON.stringify(cleaned),
+              writable: false,
+            });
+            Object.defineProperty(this, 'response', {
+              value: JSON.stringify(cleaned),
+              writable: false,
+            });
+          } catch {
+            // ignore parse errors
+          }
+        }
+        if (typeof origOnreadystatechange === 'function') {
+          origOnreadystatechange.call(this, ev);
+        }
+      };
+    }
+    return origSend.call(this, body);
+  };
+}
+
+function stripToolCallsFromHistory(json: any): { cleaned: any; records: ToolCallRestoreRecord[] } {
+  const records: ToolCallRestoreRecord[] = [];
+  const cleaned = { ...json };
+
+  if (cleaned.chat_messages && Array.isArray(cleaned.chat_messages)) {
+    cleaned.chat_messages = cleaned.chat_messages.map((msg: any) => {
+      if (!msg || msg.role !== 'assistant') return msg;
+
+      const toolCalls = extractToolCalls(msg.content || '');
+      if (toolCalls.length === 0) return msg;
+
+      const cleanContent = (msg.content || '').replace(/<memory_save>[\s\S]*?<\/memory_save>/g, '').trim();
+      const cleanFragments = msg.fragments
+        ? msg.fragments.map((f: any) => ({
+            ...f,
+            content: (f.content || '').replace(/<memory_save>[\s\S]*?<\/memory_save>/g, '').trim(),
+          }))
+        : msg.fragments;
+
+      records.push({
+        id: msg.id || crypto.randomUUID(),
+        calls: toolCalls,
+        executions: [],
+        content: msg.content || '',
+        source: 'history',
+        url: '',
+        timestamp: Date.now(),
+      });
+
+      return {
+        ...msg,
+        content: cleanContent,
+        fragments: cleanFragments,
+      };
+    });
+  }
+
+  return { cleaned, records };
+}
+
+// ─── IndexedDB Intercept ───────────────────────────────────────────
+
+function hookIndexedDB() {
+  const origGet = IDBObjectStore.prototype.get;
+  const origGetAll = IDBObjectStore.prototype.getAll;
+
+  IDBObjectStore.prototype.get = function (key: IDBValidKey | IDBKeyRange) {
+    const result = origGet.call(this, key as any);
+    const storeName = (this as any).name;
+
+    if (storeName === 'history-message') {
+      const origResult = result;
+      return new Proxy(origResult, {
+        get(target, prop) {
+          if (prop === 'result') {
+            const value = (target as any).result;
+            if (value && typeof value === 'object') {
+              return cleanHistoryResult(value);
+            }
+            return value;
+          }
+          return Reflect.get(target, prop);
+        },
+      });
+    }
+
+    return result;
+  };
+
+  IDBObjectStore.prototype.getAll = function (query?: IDBValidKey | IDBKeyRange | null, count?: number) {
+    const result = origGetAll.call(this, query as any, count);
+    const storeName = (this as any).name;
+
+    if (storeName === 'history-message') {
+      return new Proxy(result, {
+        get(target, prop) {
+          if (prop === 'result') {
+            const value = (target as any).result;
+            if (Array.isArray(value)) {
+              return value.map((item: any) => cleanHistoryResult(item));
+            }
+            return value;
+          }
+          return Reflect.get(target, prop);
+        },
+      });
+    }
+
+    return result;
+  };
+}
+
+function cleanHistoryResult(item: any): any {
+  if (!item || typeof item !== 'object') return item;
+  if (item.role !== 'assistant') return item;
+
+  const content = item.content || '';
+  if (!content.includes('<memory_save') && !content.includes('<dpp')) return item;
+
+  const cleanContent = content
+    .replace(/<memory_save>[\s\S]*?<\/memory_save>/g, '')
+    .replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, '')
+    .trim();
+
+  return {
+    ...item,
+    content: cleanContent,
+  };
+}
+
+// ─── Memory Command Parsing ────────────────────────────────────────
+
 interface MemoryInvocation {
   memory: Memory;
   args: string;
@@ -424,7 +618,6 @@ function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation
   const sortedMemories = [...memories].sort((a, b) => b.name.length - a.name.length);
 
   for (const m of sortedMemories) {
-    // Check by name
     const prefixName = `#${m.name.toLowerCase()}`;
     if (inputLower === prefixName) {
       return { memory: m, args: '', rawInput: input };
@@ -436,7 +629,6 @@ function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation
       return { memory: m, args: input.slice(prefixName.length + 1), rawInput: input };
     }
 
-    // Check by ID
     if (m.id != null) {
       const prefixId = `#${m.id}`;
       if (inputLower === prefixId) {

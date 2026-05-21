@@ -3,7 +3,7 @@ import type { BackgroundConfig } from '../types';
 const STORAGE_KEY = 'deepseek_pp_background';
 
 export async function getBackgroundConfig(): Promise<BackgroundConfig | null> {
-  const data = await chrome.storage.local.get(STORAGE_KEY);
+  const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, BackgroundConfig | undefined>;
   return data[STORAGE_KEY] ?? null;
 }
 

@@ -47,6 +47,32 @@ export function extractTextFromParsed(parsed: any): string | null {
   if (parsed.p && parsed.o === 'APPEND' && typeof parsed.v === 'string') {
     return parsed.v;
   }
+  // BATCH format: {"o":"BATCH", "v":[...]}
+  if (parsed.o === 'BATCH' && Array.isArray(parsed.v)) {
+    for (const item of parsed.v) {
+      const text = extractTextFromParsed(item);
+      if (text) return text;
+    }
+    return null;
+  }
+  // Direct content setting: {"p":".../content", "v":"text"}
+  if (parsed.p && parsed.p.endsWith('/content') && typeof parsed.v === 'string') {
+    return parsed.v;
+  }
+  // Fragment creation: {"p":"response/fragments","o":"APPEND","v":[{content:"text",...}]}
+  if (
+    parsed.p &&
+    parsed.p.endsWith('/fragments') &&
+    parsed.o === 'APPEND' &&
+    Array.isArray(parsed.v)
+  ) {
+    for (const frag of parsed.v) {
+      if (typeof frag.content === 'string') {
+        return frag.content;
+      }
+    }
+    return null;
+  }
   return null;
 }
 

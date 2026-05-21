@@ -22,7 +22,7 @@ import { getBackgroundConfig, saveBackgroundConfig, clearBackgroundConfig } from
 import { getSyncConfig, saveSyncConfig } from '../core/sync/config';
 import { webdavTest, webdavMkcol, webdavGet, webdavPut } from '../core/sync/webdav-client';
 import { mergeMemories, mergeSkills, mergePresets } from '../core/sync/merge';
-import type { BackgroundConfig, Memory, ModelType, Skill, SyncConfig, SystemPromptPreset } from '../core/types';
+import type { BackgroundConfig, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset } from '../core/types';
 
 export default defineBackground(() => {
   chrome.sidePanel
@@ -53,7 +53,7 @@ async function handleMessage(
     }
 
     case 'SAVE_MEMORY': {
-      const id = await saveMemory(message.payload as Omit<Memory, 'id' | 'createdAt' | 'updatedAt' | 'accessCount' | 'lastAccessedAt'>);
+      const id = await saveMemory(message.payload as NewMemory);
       await broadcastStateUpdate(sender.tab?.id);
       return { id };
     }
@@ -120,7 +120,7 @@ async function handleMessage(
       return getActivePreset();
 
     case 'GET_CONFIG':
-      return { version: '0.2.2' };
+      return { version: '0.2.3' };
 
     case 'GET_MODEL_TYPE':
       return getModelType();

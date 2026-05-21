@@ -27,7 +27,7 @@ export default function SettingsPage() {
   const [bgImageData, setBgImageData] = useState('');
   const [bgOpacity, setBgOpacity] = useState(0.3);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const opacitySaveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const opacitySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const bgPreview = bgType === 'url' ? bgUrl : bgImageData;
 
@@ -140,7 +140,7 @@ export default function SettingsPage() {
 
   const handleOpacityChange = (val: number) => {
     setBgOpacity(val);
-    clearTimeout(opacitySaveTimer.current);
+    if (opacitySaveTimer.current) clearTimeout(opacitySaveTimer.current);
     opacitySaveTimer.current = setTimeout(() => saveBgConfig({ opacity: val }), 200);
   };
 

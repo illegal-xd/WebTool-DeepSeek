@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie';
-import type { Memory } from '../types';
+import type { Memory, NewMemory } from '../types';
 
 const db = new Dexie('DeepSeekPP') as Dexie & {
   memories: EntityTable<Memory, 'id'>;
@@ -31,17 +31,19 @@ export async function getMemoryById(id: number): Promise<Memory | undefined> {
 }
 
 export async function saveMemory(
-  mem: Omit<Memory, 'id' | 'createdAt' | 'updatedAt' | 'accessCount' | 'lastAccessedAt'>,
+  mem: NewMemory,
 ): Promise<number> {
   const now = Date.now();
-  return db.memories.add({
-    ...mem,
-    syncId: crypto.randomUUID(),
+  const { syncId: memSyncId, ...rest } = mem;
+  const entry: Omit<Memory, 'id'> = {
+    ...rest,
+    syncId: memSyncId ?? crypto.randomUUID(),
     createdAt: now,
     updatedAt: now,
     accessCount: 0,
     lastAccessedAt: now,
-  } as Memory);
+  };
+  return db.memories.add(entry) as Promise<number>;
 }
 
 export async function updateMemory(mem: Memory): Promise<void> {

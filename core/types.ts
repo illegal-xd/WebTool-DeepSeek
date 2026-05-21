@@ -57,6 +57,37 @@ export interface ToolCall {
   raw: string;
 }
 
+export interface ToolCardResult {
+  ok: boolean;
+  summary: string;
+  detail?: string;
+}
+
+export interface ToolExecutionRecord {
+  name: string;
+  result: ToolCardResult;
+}
+
+export interface ToolCallRestoreRecord {
+  id: string;
+  calls: ToolCall[];
+  executions: ToolExecutionRecord[];
+  content: string;
+  source: string;
+  url: string;
+  timestamp: number;
+}
+
+export type NewMemory = {
+  type: MemoryType;
+  name: string;
+  content: string;
+  description: string;
+  tags: string[];
+  pinned: boolean;
+  syncId?: string;
+};
+
 export interface SystemPromptPreset {
   id: string;
   name: string;
@@ -88,7 +119,7 @@ export type MessageAction =
   | { type: 'GET_MEMORIES' }
   | { type: 'GET_MEMORY_BY_ID'; payload: { id: number } }
   | { type: 'GET_SKILLS' }
-  | { type: 'SAVE_MEMORY'; payload: Omit<Memory, 'id' | 'createdAt' | 'updatedAt' | 'accessCount' | 'lastAccessedAt'> }
+  | { type: 'SAVE_MEMORY'; payload: NewMemory }
   | { type: 'DELETE_MEMORY'; payload: { id: number } }
   | { type: 'UPDATE_MEMORY'; payload: Memory }
   | { type: 'SAVE_SKILL'; payload: Skill }

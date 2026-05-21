@@ -1,7 +1,27 @@
-import { TOOL_CALLS_BLOCK_REGEX, INVOKE_REGEX, PARAMETER_REGEX } from '../constants';
+import { TOOL_CALLS_BLOCK_REGEX, INVOKE_REGEX, PARAMETER_REGEX, TOOL_CALL_REGEX } from '../constants';
 import type { ToolCall } from '../types';
 
-export function extractToolCalls(text: string): ToolCall[] {
+function extractXmlToolCalls(text: string): ToolCall[] {
+  const calls: ToolCall[] = [];
+  const regex = new RegExp(TOOL_CALL_REGEX.source, 'g');
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const name = match[1];
+    const jsonStr = match[2];
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(jsonStr);
+    } catch {
+      continue;
+    }
+    calls.push({ name, payload, raw: match[0] });
+  }
+
+  return calls;
+}
+
+function extractLegacyToolCalls(text: string): ToolCall[] {
   const calls: ToolCall[] = [];
   const blockRegex = new RegExp(TOOL_CALLS_BLOCK_REGEX.source, 'g');
   let blockMatch: RegExpExecArray | null;
@@ -40,7 +60,59 @@ export function extractToolCalls(text: string): ToolCall[] {
   return calls;
 }
 
+export function extractToolCalls(text: string): ToolCall[] {
+  return [
+    ...extractXmlToolCalls(text),
+    ...extractLegacyToolCalls(text),
+  ];
+}
+
 export function stripToolCalls(text: string): string {
-  const regex = new RegExp(TOOL_CALLS_BLOCK_REGEX.source, 'g');
-  return text.replace(regex, '').trim();
+  // Strip both legacy DSML blocks and new XML blocks
+  let result = text.replace(new RegExp(TOOL_CALLS_BLOCK_REGEX.source, 'g'), '');
+  result = result.replace(new RegExp(TOOL_CALL_REGEX.source, 'g'), '');
+  return result.trim();
+}
+
+export function replaceToolCallsWithSummary(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  let inBlock = false;
+  let callCount = 0;
+
+  for (const line of lines) {
+    if (TOOL_CALL_REGEX.test(line)) {
+      TOOL_CALL_REGEX.lastIndex = 0;
+      callCount++;
+      if (!inBlock) {
+        inBlock = true;
+      }
+      continue;
+    }
+    if (TOOL_CALLS_BLOCK_REGEX.test(line)) {
+      TOOL_CALLS_BLOCK_REGEX.lastIndex = 0;
+      callCount++;
+      if (!inBlock) {
+        inBlock = true;
+      }
+      continue;
+    }
+    if (inBlock) {
+      result.push(`🔧 已执行工具（${callCount}次）`);
+      inBlock = false;
+      callCount = 0;
+    }
+    result.push(line);
+  }
+
+  if (inBlock) {
+    result.push(`🔧 已执行工具（${callCount}次）`);
+  }
+
+  return result.join('\n');
+}
+
+export function replaceMatchWithSummary(match: string): string {
+  const isXmlBlock = TOOL_CALL_REGEX.test(match);
+  return isXmlBlock ? '🔧 已执行工具（1次）' : '🔧 已执行工具（1次）';
 }

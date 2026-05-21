@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Memory, MemoryType } from '../../../core/types';
+import type { Memory, MemoryType, NewMemory } from '../../../core/types';
 import MemoryCard from '../components/MemoryCard';
 import MemoryForm from '../components/MemoryForm';
 import { MEMORY_TYPE_CONFIG } from '../constants';
@@ -21,6 +21,17 @@ export default function MemoryPage() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // Listen for state updates from background (e.g., AI tool calls)
+  useEffect(() => {
+    const handler = (message: { type: string }) => {
+      if (message.type === 'STATE_UPDATED') {
+        load();
+      }
+    };
+    chrome.runtime.onMessage.addListener(handler);
+    return () => chrome.runtime.onMessage.removeListener(handler);
+  }, []);
 
   useEffect(() => {
     const mainEl = document.querySelector('main');
@@ -46,7 +57,7 @@ export default function MemoryPage() {
     load();
   };
 
-  const handleSave = async (mem: Omit<Memory, 'id' | 'createdAt' | 'updatedAt' | 'accessCount' | 'lastAccessedAt'>) => {
+  const handleSave = async (mem: NewMemory) => {
     if (editingMemory?.id) {
       await chrome.runtime.sendMessage({
         type: 'UPDATE_MEMORY',
@@ -169,6 +180,11 @@ export default function MemoryPage() {
           <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
             #记忆-对话规则 给我一句每日英语句子
           </code>
+        </p>
+      </div>
+      <div className="ds-info-panel rounded-xl p-3.5">
+        <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
+          记忆模式数据在不使用 Skill、预设或者单独使用记忆选择时，默认全量输出给 DeepSpeek
         </p>
       </div>
       <div className="ds-info-panel rounded-xl p-3.5">

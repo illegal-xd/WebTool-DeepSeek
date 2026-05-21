@@ -1,3 +1,9 @@
+/**
+ * @deprecated Replaced by dpp-tool-block in entrypoints/content.ts.
+ * ToolCardResult type is now defined in core/types.ts.
+ * This file is kept for reference - remove after full migration.
+ */
+
 import type { ToolCall } from '../types';
 
 export const TOOL_CARD_CLASS = 'dpp-tool-card';

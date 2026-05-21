@@ -3,7 +3,7 @@ import type { SyncConfig } from '../types';
 const CONFIG_KEY = 'deepseek_pp_sync_config';
 
 export async function getSyncConfig(): Promise<SyncConfig | null> {
-  const data = await chrome.storage.local.get(CONFIG_KEY);
+  const data = await chrome.storage.local.get(CONFIG_KEY) as Record<string, SyncConfig | undefined>;
   return data[CONFIG_KEY] ?? null;
 }
 

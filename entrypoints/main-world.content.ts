@@ -3,7 +3,7 @@ import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
 import { updatePresetTag } from '../core/ui/preset-tag';
-import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall } from '../core/types';
+import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord } from '../core/types';
 
 export default defineContentScript({
   matches: ['*://chat.deepseek.com/*'],
@@ -18,6 +18,39 @@ export default defineContentScript({
           source: 'WebTool-DeepSeek-main',
           type: 'TOOL_CALL',
           data: call,
+        });
+      },
+      async onToolCallExecuted(call: ToolCall): Promise<ToolCardResult> {
+        return new Promise((resolve) => {
+          const handler = (event: MessageEvent) => {
+            if (
+              event.data?.source !== 'WebTool-DeepSeek-content' ||
+              event.data?.type !== 'TOOL_CALL_RESULT' ||
+              event.data?.callName !== call.name
+            ) return;
+            window.removeEventListener('message', handler);
+            resolve(event.data.data as ToolCardResult);
+          };
+          window.addEventListener('message', handler);
+
+          window.postMessage({
+            source: 'WebTool-DeepSeek-main',
+            type: 'EXECUTE_TOOL_CALL',
+            data: call,
+          });
+
+          // Timeout fallback after 10s
+          setTimeout(() => {
+            window.removeEventListener('message', handler);
+            resolve({ ok: true, summary: '已执行' });
+          }, 10000);
+        });
+      },
+      onToolCallsRestored(records: ToolCallRestoreRecord[]) {
+        window.postMessage({
+          source: 'WebTool-DeepSeek-main',
+          type: 'RESTORE_TOOL_CALLS',
+          records,
         });
       },
       onResponseComplete(fullText: string) {
