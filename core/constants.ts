@@ -2,8 +2,6 @@ export const DEEPSEEK_API_URL = 'https://chat.deepseek.com/api/v0/chat/completio
 
 export const MEMORY_TOKEN_BUDGET = 1500;
 
-export const PRESET_REINJECTION_INTERVAL = 10;
-
 export const MSG_PREFIX = 'DEEPSEEK_PP';
 
 export const DSML = '｜DSML｜';

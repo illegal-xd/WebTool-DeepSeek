@@ -1,4 +1,4 @@
-import { DEEPSEEK_API_URL, PRESET_REINJECTION_INTERVAL } from '../constants';
+import { DEEPSEEK_API_URL } from '../constants';
 import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill } from '../types';
 import { buildAugmentedPrompt } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
@@ -13,8 +13,7 @@ interface HookState {
   skills: Skill[];
   activePreset: SystemPromptPreset | null;
   modelType: ModelType;
-  messageCount: number;
-  _lastPresetId: string | null;
+  _lastChatSessionId: string | null;
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
   onMemoriesUsed: (ids: number[]) => void;
@@ -28,8 +27,7 @@ let hookState: HookState = {
   skills: [],
   activePreset: null,
   modelType: null,
-  messageCount: 0,
-  _lastPresetId: null,
+  _lastChatSessionId: null,
   onToolCall: () => {},
   onResponseComplete: () => {},
   onMemoriesUsed: () => {},
@@ -118,24 +116,18 @@ function modifyRequestBody(bodyStr: string): string | null {
   if (!originalPrompt) return null;
 
   const thinkingEnabled = body.thinking_enabled === true;
-  const isFirstMessage = body.parent_message_id === null || body.parent_message_id === undefined;
+  const chatSessionId = typeof body.chat_session_id === 'string' ? body.chat_session_id : null;
+  const chatSessionChanged = chatSessionId !== null && chatSessionId !== hookState._lastChatSessionId;
+  const isFirstMessage =
+    body.parent_message_id === null ||
+    body.parent_message_id === undefined ||
+    chatSessionChanged;
 
-  if (isFirstMessage) {
-    hookState.messageCount = 0;
-    hookState._lastPresetId = hookState.activePreset?.id ?? null;
-  }
-  hookState.messageCount++;
-
-  // Detect if the preset changed mid-conversation
-  const currentPresetId = hookState.activePreset?.id ?? null;
-  const presetJustChanged = currentPresetId !== hookState._lastPresetId;
-  if (presetJustChanged) {
-    hookState._lastPresetId = currentPresetId;
+  if (chatSessionId !== null) {
+    hookState._lastChatSessionId = chatSessionId;
   }
 
-  const shouldInjectPreset =
-    hookState.activePreset &&
-    (isFirstMessage || presetJustChanged || hookState.messageCount % PRESET_REINJECTION_INTERVAL === 0);
+  const shouldInjectPreset = Boolean(hookState.activePreset);
 
   const presetPrefix = shouldInjectPreset
     ? hookState.activePreset!.content + '\n\n---\n\n'

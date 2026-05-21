@@ -100,6 +100,14 @@ export default defineContentScript({
         case 'SET_ACTIVE_PRESET': {
           const id = event.data.id as string | null;
           await chrome.runtime.sendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
+          const [memories, skills, presets, activePreset, modelType] = await Promise.all([
+            chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }),
+            chrome.runtime.sendMessage({ type: 'GET_SKILLS' }),
+            chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
+            chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
+            chrome.runtime.sendMessage({ type: 'GET_MODEL_TYPE' }),
+          ]);
+          syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType);
           break;
         }
       }
