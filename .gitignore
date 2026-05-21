@@ -29,3 +29,4 @@ web-ext.config.ts
 
 # Build artifacts
 *.zip
+.github/workflows/
