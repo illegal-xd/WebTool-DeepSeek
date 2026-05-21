@@ -1,6 +1,7 @@
 import { installFetchHook, updateHookState } from '../core/interceptor/fetch-hook';
 import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
+import { initPresetPopup } from '../core/ui/preset-popup';
 import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall } from '../core/types';
 
 export default defineContentScript({
@@ -39,15 +40,17 @@ export default defineContentScript({
 
       switch (event.data.type) {
         case 'SYNC_STATE': {
-          const { memories, skills, activePreset, modelType } = event.data as {
+          const { memories, skills, presets, activePreset, modelType } = event.data as {
             memories: Memory[];
             skills: Skill[];
+            presets: SystemPromptPreset[];
             activePreset: SystemPromptPreset | null;
             modelType: ModelType;
           };
           updateHookState({ memories, skills, activePreset, modelType });
           initSkillPopup(skills);
           initMemoryPopup(memories);
+          initPresetPopup(presets);
           break;
         }
       }

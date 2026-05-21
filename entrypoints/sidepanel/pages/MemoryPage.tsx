@@ -170,6 +170,9 @@ export default function MemoryPage() {
             #记忆-对话规则 给我一句每日英语句子
           </code>
         </p>
+        <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
+          注意：DeepSeek 拥有 128k 上下文，V4 版本拥有 1M 超长上下文，DeepSpeek 本身可以记忆绝大部分数据，当使用了某个记忆之后，DeepSeek 可以做到直接提取上下文对话信息，所以无需重复使用记忆选择能力
+        </p>
       </div>
     </div>
   );

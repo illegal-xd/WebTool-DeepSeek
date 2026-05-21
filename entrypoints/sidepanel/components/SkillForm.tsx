@@ -144,7 +144,7 @@ export default function SkillForm({ initialSkill, onSave, onCancel, onWidthChang
         <div className="flex items-center justify-between p-2 rounded-lg border border-dashed" style={{ borderColor: 'var(--ds-border)' }}>
           <div className="flex flex-col pr-2">
             <span className="text-xs font-semibold" style={{ color: 'var(--ds-text-secondary)' }}>启用记忆注入</span>
-            <span className="text-[10px]" style={{ color: 'var(--ds-text-tertiary)' }}>使用该技能时注入关联的记忆数据</span>
+            <span className="text-[10px]" style={{ color: 'var(--ds-text-tertiary)' }}>使用该技能时注入关联的记忆数据，启用后不选择记忆数据默认传递所有记忆</span>
           </div>
           <button
             type="button"

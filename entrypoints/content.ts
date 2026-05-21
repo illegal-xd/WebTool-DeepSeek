@@ -25,14 +25,15 @@ export default defineContentScript({
       else document.addEventListener('DOMContentLoaded', () => r(undefined), { once: true });
     });
 
-    const [memories, skills, activePreset, modelType] = await Promise.all([
+    const [memories, skills, presets, activePreset, modelType] = await Promise.all([
       chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }),
       chrome.runtime.sendMessage({ type: 'GET_SKILLS' }),
+      chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
       chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
       chrome.runtime.sendMessage({ type: 'GET_MODEL_TYPE' }),
     ]);
 
-    syncToMainWorld(memories ?? [], skills ?? [], activePreset, modelType);
+    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType);
 
     window.addEventListener('message', async (event) => {
       if (event.data?.source !== 'WebTool-DeepSeek-main') return;
@@ -52,6 +53,11 @@ export default defineContentScript({
           finalizeResponse();
           break;
         }
+        case 'SET_ACTIVE_PRESET': {
+          const id = event.data.id as string | null;
+          await chrome.runtime.sendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
+          break;
+        }
       }
     });
 
@@ -61,7 +67,7 @@ export default defineContentScript({
 
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'STATE_UPDATED') {
-        syncToMainWorld(message.memories, message.skills, message.activePreset, message.modelType);
+        syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType);
       } else if (message.type === 'BACKGROUND_UPDATED') {
         applyBackground(message.config as BackgroundConfig | null);
       }
@@ -71,12 +77,19 @@ export default defineContentScript({
   },
 });
 
-function syncToMainWorld(memories: Memory[], skills: Skill[], activePreset: SystemPromptPreset | null, modelType: ModelType) {
+function syncToMainWorld(
+  memories: Memory[],
+  skills: Skill[],
+  presets: SystemPromptPreset[],
+  activePreset: SystemPromptPreset | null,
+  modelType: ModelType,
+) {
   window.postMessage({
     source: 'WebTool-DeepSeek-content',
     type: 'SYNC_STATE',
     memories,
     skills,
+    presets,
     activePreset,
     modelType,
   });

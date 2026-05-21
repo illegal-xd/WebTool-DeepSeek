@@ -65,11 +65,16 @@
 </p>
 
 ✅ 增加记忆模块快捷选择 `#`  
-<p> align="center"
+<p align="center">
   <img src="assets/screenshot-memory-select.png" width="600" alt="优化记忆选择">
 </p>
 
-- [ ] 增加预设提示词快捷选择 `@`
+✅ 增加预设提示词快捷切换 `@`  
+<p align="center">
+  <img src="assets/screenshot-prompt-select.png" width="600" alt="优化预设提示词选择">
+</p>
+
+- [ ] 优化存在预设提示词时的用户感知 & 消息绑定提示词
 - [ ] 新增 Message 对话绑定预设提示词
 - [ ] 增加与DeepSeek交流时用户对话框内容折叠【配置的Skill与预设】，防止提示词太长导致上下滚动操作加巨
 - [ ] 增加暗黑主题适配

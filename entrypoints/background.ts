@@ -226,13 +226,17 @@ async function broadcastToTabs(payload: Record<string, unknown>, excludeTabId?: 
 }
 
 async function broadcastStateUpdate(excludeTabId?: number) {
-  const [memories, skills, activePreset, modelType] = await Promise.all([
+  const [memories, skills, presets, activePreset, modelType] = await Promise.all([
     getAllMemories(),
     getAllSkills(),
+    getAllPresets(),
     getActivePreset(),
     getModelType(),
   ]);
-  await broadcastToTabs({ type: 'STATE_UPDATED', memories, skills, activePreset, modelType }, excludeTabId);
+  const payload = { type: 'STATE_UPDATED', memories, skills, presets, activePreset, modelType };
+  await broadcastToTabs(payload, excludeTabId);
+  // Also notify extension pages (sidepanel, popup) via runtime messaging
+  chrome.runtime.sendMessage(payload).catch(() => {});
 }
 
 async function broadcastBackgroundUpdate(config: BackgroundConfig | null) {

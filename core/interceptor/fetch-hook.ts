@@ -13,6 +13,7 @@ interface HookState {
   activePreset: SystemPromptPreset | null;
   modelType: ModelType;
   messageCount: number;
+  _lastPresetId: string | null;
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
   onMemoriesUsed: (ids: number[]) => void;
@@ -24,6 +25,7 @@ let hookState: HookState = {
   activePreset: null,
   modelType: null,
   messageCount: 0,
+  _lastPresetId: null,
   onToolCall: () => {},
   onResponseComplete: () => {},
   onMemoriesUsed: () => {},
@@ -99,12 +101,20 @@ function modifyRequestBody(bodyStr: string): string | null {
 
   if (isFirstMessage) {
     hookState.messageCount = 0;
+    hookState._lastPresetId = hookState.activePreset?.id ?? null;
   }
   hookState.messageCount++;
 
+  // Detect if the preset changed mid-conversation (e.g. via @ trigger)
+  const currentPresetId = hookState.activePreset?.id ?? null;
+  const presetJustChanged = currentPresetId !== hookState._lastPresetId;
+  if (presetJustChanged) {
+    hookState._lastPresetId = currentPresetId;
+  }
+
   const shouldInjectPreset =
     hookState.activePreset &&
-    (isFirstMessage || hookState.messageCount % PRESET_REINJECTION_INTERVAL === 0);
+    (isFirstMessage || presetJustChanged || hookState.messageCount % PRESET_REINJECTION_INTERVAL === 0);
 
   const presetPrefix = shouldInjectPreset
     ? hookState.activePreset!.content + '\n\n---\n\n'
@@ -117,15 +127,7 @@ function modifyRequestBody(bodyStr: string): string | null {
   const memInvocation = parseMemoryCommand(originalPrompt, hookState.memories);
   if (memInvocation) {
     const { memory, args } = memInvocation;
-    let prompt = wrapMemoryInput(memory.name, memory.content, args);
-
-    if (hookState.memories.length > 0) {
-      const { augmented } = buildAugmentedPrompt(prompt, hookState.memories, {
-        thinkingEnabled,
-        identityOnly: true,
-      });
-      prompt = augmented;
-    }
+    const prompt = wrapMemoryInput(memory.name, memory.content, args);
 
     body.prompt = presetPrefix + prompt;
     if (memory.id != null) {
@@ -139,22 +141,13 @@ function modifyRequestBody(bodyStr: string): string | null {
     const resolved = resolveSkills(invocation.skillName, invocation.args);
     if (resolved) {
       let prompt = resolved.combinedPrompt;
-      const anyMemoryEnabled = resolved.memoryEnabled;
 
-      if (anyMemoryEnabled) {
-        let targetMemories = hookState.memories;
-        if (resolved.memoryIds && resolved.memoryIds.length > 0) {
-          targetMemories = hookState.memories.filter((m) => m.id !== undefined && resolved.memoryIds!.includes(m.id));
-        } else if (resolved.memoryIds) {
-          targetMemories = [];
-        }
+      // Collect memory sources: skill config + active preset config
+      const memorySources = collectMemorySources(resolved);
+      const targetMemories = resolveTargetMemories(memorySources);
+
+      if (targetMemories.length > 0) {
         const { augmented } = buildAugmentedPrompt(prompt, targetMemories, { thinkingEnabled });
-        prompt = augmented;
-      } else if (hookState.memories.length > 0) {
-        const { augmented } = buildAugmentedPrompt(prompt, hookState.memories, {
-          thinkingEnabled,
-          identityOnly: true,
-        });
         prompt = augmented;
       }
 
@@ -163,21 +156,27 @@ function modifyRequestBody(bodyStr: string): string | null {
     }
   }
 
+  // Determine which memories to inject based on preset configuration
   let targetMemories = hookState.memories;
+  let identityOnly = false;
+
   if (hookState.activePreset) {
     if (hookState.activePreset.memoryEnabled === true) {
+      // Explicitly enabled: use specified memoryIds if provided, otherwise all
       if (hookState.activePreset.memoryIds && hookState.activePreset.memoryIds.length > 0) {
         targetMemories = hookState.memories.filter(
           (m) => m.id !== undefined && hookState.activePreset!.memoryIds!.includes(m.id)
         );
       }
-    } else if (hookState.activePreset.memoryEnabled === false) {
+    } else {
+      // Not explicitly enabled (false or undefined): no memories injected
       targetMemories = [];
     }
   }
 
   const { augmented, usedMemoryIds } = buildAugmentedPrompt(originalPrompt, targetMemories, {
     thinkingEnabled,
+    identityOnly,
   });
   body.prompt = presetPrefix + augmented;
 
@@ -186,6 +185,65 @@ function modifyRequestBody(bodyStr: string): string | null {
   }
 
   return JSON.stringify(body);
+}
+
+/**
+ * Collect memory configuration from skill resolution and active preset.
+ * Returns: { useAll: true } if any source enables all memories,
+ *          or { ids: Set<number> } for specific IDs,
+ *          or { none: true } if no source enables memories.
+ */
+function collectMemorySources(resolved: ResolvedSkills): MemorySourceResult {
+  const sources: Array<{ enabled: boolean; ids?: number[] }> = [];
+
+  // Skill config
+  sources.push({ enabled: resolved.memoryEnabled, ids: resolved.memoryIds });
+
+  // Active preset config
+  if (hookState.activePreset) {
+    sources.push({
+      enabled: hookState.activePreset.memoryEnabled === true,
+      ids: hookState.activePreset.memoryIds,
+    });
+  }
+
+  let anyEnabled = false;
+  let useAll = false;
+  const specificIds = new Set<number>();
+
+  for (const src of sources) {
+    if (!src.enabled) continue;
+    anyEnabled = true;
+    if (!src.ids || src.ids.length === 0) {
+      // Enabled but no specific IDs → use all memories
+      useAll = true;
+    } else {
+      for (const id of src.ids) specificIds.add(id);
+    }
+  }
+
+  if (!anyEnabled) return { type: 'none' };
+  if (useAll) return { type: 'all' };
+  return { type: 'ids', ids: specificIds };
+}
+
+type MemorySourceResult =
+  | { type: 'none' }
+  | { type: 'all' }
+  | { type: 'ids'; ids: Set<number> };
+
+/**
+ * Resolve target memories from collected sources, with deduplication.
+ */
+function resolveTargetMemories(source: MemorySourceResult): Memory[] {
+  switch (source.type) {
+    case 'none':
+      return [];
+    case 'all':
+      return hookState.memories;
+    case 'ids':
+      return hookState.memories.filter((m) => m.id !== undefined && source.ids.has(m.id));
+  }
 }
 
 interface ResolvedSkills {
@@ -208,22 +266,37 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
     if (secondSkill) {
       const userArgs = secondInvocation.args;
       const combinedInstructions = primarySkill.instructions + '\n\n---\n\n' + secondSkill.instructions;
-      
-      const memoryIds: number[] = [];
-      if (primarySkill.memoryEnabled && primarySkill.memoryIds) {
-        memoryIds.push(...primarySkill.memoryIds);
+
+      const anyMemoryEnabled = primarySkill.memoryEnabled || secondSkill.memoryEnabled;
+
+      // Merge memory IDs; if either skill is enabled with no specific IDs → use all (return undefined)
+      let mergedMemoryIds: number[] | undefined = undefined;
+      if (anyMemoryEnabled) {
+        const hasAllPrimary = primarySkill.memoryEnabled && (!primarySkill.memoryIds || primarySkill.memoryIds.length === 0);
+        const hasAllSecond = secondSkill.memoryEnabled && (!secondSkill.memoryIds || secondSkill.memoryIds.length === 0);
+
+        if (hasAllPrimary || hasAllSecond) {
+          // At least one wants all memories → use all
+          mergedMemoryIds = undefined;
+        } else {
+          // Both specify specific IDs → merge & deduplicate
+          const idSet = new Set<number>();
+          if (primarySkill.memoryEnabled && primarySkill.memoryIds) {
+            for (const id of primarySkill.memoryIds) idSet.add(id);
+          }
+          if (secondSkill.memoryEnabled && secondSkill.memoryIds) {
+            for (const id of secondSkill.memoryIds) idSet.add(id);
+          }
+          mergedMemoryIds = idSet.size > 0 ? Array.from(idSet) : undefined;
+        }
       }
-      if (secondSkill.memoryEnabled && secondSkill.memoryIds) {
-        memoryIds.push(...secondSkill.memoryIds);
-      }
-      const uniqueMemoryIds = Array.from(new Set(memoryIds));
 
       return {
         combinedPrompt: userArgs
           ? wrapUserInput(combinedInstructions, userArgs)
           : combinedInstructions,
-        memoryEnabled: primarySkill.memoryEnabled || secondSkill.memoryEnabled,
-        memoryIds: uniqueMemoryIds,
+        memoryEnabled: anyMemoryEnabled,
+        memoryIds: mergedMemoryIds,
       };
     }
   }
@@ -233,7 +306,10 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
       ? wrapUserInput(primarySkill.instructions, args)
       : primarySkill.instructions,
     memoryEnabled: primarySkill.memoryEnabled,
-    memoryIds: primarySkill.memoryEnabled ? primarySkill.memoryIds || [] : [],
+    // memoryIds: undefined means "all" when memoryEnabled is true
+    memoryIds: primarySkill.memoryEnabled && primarySkill.memoryIds && primarySkill.memoryIds.length > 0
+      ? primarySkill.memoryIds
+      : undefined,
   };
 }
 

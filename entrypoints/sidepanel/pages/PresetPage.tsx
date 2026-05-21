@@ -20,7 +20,16 @@ export default function PresetPage() {
     setActiveId((active as SystemPromptPreset | null)?.id ?? null);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const listener = (message: any) => {
+      if (message.type === 'STATE_UPDATED') {
+        load();
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    return () => chrome.runtime.onMessage.removeListener(listener);
+  }, []);
 
   useEffect(() => {
     const mainEl = document.querySelector('main');
@@ -190,6 +199,20 @@ export default function PresetPage() {
           </p>
         </div>
       )}
+
+      <div className="ds-info-panel rounded-xl p-3.5">
+        <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
+          在 DeepSeek 输入框中输入{' '}
+          <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
+            @预设名
+          </code>{' '}
+          快速切换预设。输入{' '}
+          <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
+            @close
+          </code>{' '}
+          关闭当前预设。
+        </p>
+      </div>
     </div>
   );
 }
