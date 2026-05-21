@@ -3,9 +3,20 @@ import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, To
 const BLOCK_CLASS = 'dpp-tool-block';
 const BLOCK_STYLE_ID = 'dpp-tool-block-css';
 const STORAGE_PREFIX = 'dpp_tool_exec_';
+const TOOL_OPEN_TAG_REGEX = /<(memory_save|memory_update|memory_delete)>/;
+const TOOL_COMPLETE_BLOCK_REGEX = /<(memory_save|memory_update|memory_delete)>[\s\S]*?<\/\1>/g;
+const TOOL_END_TAG_REGEX = /<\/(memory_save|memory_update|memory_delete)>/;
+
+interface DomToolCleanupState {
+  insideToolBlock: boolean;
+  activeNode: Text | null;
+  visiblePrefix: string;
+}
 
 let nextCallId = 0;
 let currentToolBlock: HTMLElement | null = null;
+const earlyPlaceholderNames: string[] = [];
+const assistantToolCleanupState = new WeakMap<Element, DomToolCleanupState>();
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
 const resolvedCallRaws = new Set<string>();
 
@@ -281,6 +292,34 @@ function addExecutingToolItem(block: HTMLElement, call: ToolCall) {
 	  body.appendChild(item);
 	}
 
+function renderEarlyToolPlaceholder(name: string) {
+  if (earlyPlaceholderNames.includes(name)) return;
+
+  if (currentToolBlock && document.contains(currentToolBlock)) {
+    addExecutingToolItem(currentToolBlock, { name, payload: {}, raw: '' });
+    earlyPlaceholderNames.push(name);
+    return;
+  }
+
+  const block = createToolBlock({ name, payload: {}, raw: '' });
+  currentToolBlock = block;
+  earlyPlaceholderNames.push(name);
+
+  const lastMsg = getLastAssistantMessage();
+  if (lastMsg) {
+    lastMsg.appendChild(block);
+  } else {
+    document.body.appendChild(block);
+  }
+}
+
+function consumeEarlyPlaceholder(name: string): boolean {
+  const index = earlyPlaceholderNames.indexOf(name);
+  if (index === -1) return false;
+  earlyPlaceholderNames.splice(index, 1);
+  return true;
+}
+
 	function toggleBlockCollapse(block: HTMLElement) {
   const collapsed = block.getAttribute('data-collapsed') === 'true';
   block.setAttribute('data-collapsed', collapsed ? 'false' : 'true');
@@ -307,10 +346,22 @@ function getLastAssistantMessage(): HTMLElement | null {
   return msgs.length > 0 ? msgs[msgs.length - 1] : null;
 }
 
+function getAssistantMessageRoot(el: Element): Element | null {
+  return el.closest([
+    '[class*="message"][class*="assistant"]',
+    '[class*="ds-chat-message-assistant"]',
+    '[class*="ds-msg-assistant"]',
+    '[data-role="assistant"]',
+  ].join(','));
+}
+
 async function handleToolCall(call: ToolCall, callId: number) {
   // Reuse existing tool block for this conversation turn
   if (currentToolBlock && document.contains(currentToolBlock)) {
-    addExecutingToolItem(currentToolBlock, call);
+    const hasEarlyPlaceholder = consumeEarlyPlaceholder(call.name);
+    if (!hasEarlyPlaceholder) {
+      addExecutingToolItem(currentToolBlock, call);
+    }
     const entry = { call, block: currentToolBlock, callId, resolved: false };
     pendingCallMap.set(callId, entry);
     try {
@@ -329,6 +380,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
   // New conversation turn — clear previous tool call state
 	  pendingCallMap.clear();
 	  resolvedCallRaws.clear();
+	  earlyPlaceholderNames.length = 0;
 	  const lastMsg = getLastAssistantMessage();
   const block = createToolBlock(call);
   currentToolBlock = block;
@@ -555,12 +607,14 @@ function setupToolCleanupObserver() {
 }
 
 function cleanRenderedToolCalls() {
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+  for (const assistantMessage of findAssistantMessages()) {
+    cleanRenderedToolCallsInMessage(assistantMessage);
+  }
+}
+
+function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
+  const walker = document.createTreeWalker(assistantMessage, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
-      const text = node.textContent || '';
-      if (!text.includes('<memory_save') && !text.includes('<memory_update') && !text.includes('<memory_delete') && !text.includes('<dpp')) {
-        return NodeFilter.FILTER_REJECT;
-      }
       const parent = (node as Text).parentElement;
       if (!parent) return NodeFilter.FILTER_REJECT;
       if (parent.closest(`.${BLOCK_CLASS}`)) return NodeFilter.FILTER_REJECT;
@@ -570,20 +624,107 @@ function cleanRenderedToolCalls() {
 
   const targets: Text[] = [];
   let n: Node | null;
-  while ((n = walker.nextNode())) targets.push(n as Text);
+  while (true) {
+    n = walker.nextNode();
+    if (!n) break;
+    targets.push(n as Text);
+  }
+
+  const state = assistantToolCleanupState.get(assistantMessage) ?? {
+    insideToolBlock: false,
+    activeNode: null,
+    visiblePrefix: '',
+  };
 
   for (const node of targets) {
     const text = node.textContent || '';
-    const cleaned = text
-      .replace(/<memory_save>[\s\S]*?<\/memory_save>/g, '')
-      .replace(/<memory_update>[\s\S]*?<\/memory_update>/g, '')
-      .replace(/<memory_delete>[\s\S]*?<\/memory_delete>/g, '')
-      .replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, '')
-      .trim();
-    if (cleaned !== text) {
-      node.textContent = cleaned;
+    if (!text && !state.insideToolBlock) continue;
+
+    const cleaned = removeToolMarkupFromText(text, state, node);
+    if (cleaned.sawOpeningTag) {
+      renderEarlyToolPlaceholder(cleaned.sawOpeningTag);
+    }
+    if (cleaned.changed) {
+      node.textContent = cleaned.text;
     }
   }
+
+  if (state.insideToolBlock) {
+    assistantToolCleanupState.set(assistantMessage, state);
+  } else {
+    assistantToolCleanupState.delete(assistantMessage);
+  }
+}
+
+function removeToolMarkupFromText(text: string, state: DomToolCleanupState, node: Text): {
+  text: string;
+  sawOpeningTag: string | null;
+  changed: boolean;
+} {
+  let changed = false;
+  let remaining = text.replace(TOOL_COMPLETE_BLOCK_REGEX, () => {
+    changed = true;
+    return '';
+  });
+  remaining = remaining.replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, () => {
+    changed = true;
+    return '';
+  });
+
+  let output = '';
+  let cursor = 0;
+  let sawOpeningTag: string | null = null;
+
+  if (state.insideToolBlock && state.activeNode === node && state.visiblePrefix && remaining.startsWith(state.visiblePrefix)) {
+    output = state.visiblePrefix;
+    cursor = state.visiblePrefix.length;
+  } else if (state.insideToolBlock) {
+    const nextOpenMatch = remaining.match(TOOL_OPEN_TAG_REGEX);
+    const nextEndMatch = remaining.match(TOOL_END_TAG_REGEX);
+    if (nextOpenMatch && (!nextEndMatch || nextOpenMatch.index! < nextEndMatch.index!)) {
+      state.insideToolBlock = false;
+      state.activeNode = null;
+      state.visiblePrefix = '';
+    }
+  }
+
+  while (cursor < remaining.length) {
+    if (state.insideToolBlock) {
+      const endMatch = remaining.slice(cursor).match(TOOL_END_TAG_REGEX);
+      if (!endMatch || endMatch.index === undefined) {
+        cursor = remaining.length;
+        changed = true;
+        break;
+      }
+      cursor += endMatch.index + endMatch[0].length;
+      state.insideToolBlock = false;
+      state.activeNode = null;
+      state.visiblePrefix = '';
+      changed = true;
+      continue;
+    }
+
+    const openMatch = remaining.slice(cursor).match(TOOL_OPEN_TAG_REGEX);
+    if (!openMatch || openMatch.index === undefined) {
+      output += remaining.slice(cursor);
+      break;
+    }
+
+    output += remaining.slice(cursor, cursor + openMatch.index);
+    sawOpeningTag = openMatch[1];
+    cursor += openMatch.index + openMatch[0].length;
+    state.insideToolBlock = true;
+    state.activeNode = node;
+    state.visiblePrefix = output;
+    changed = true;
+  }
+
+  if (state.insideToolBlock && state.activeNode !== node) {
+    state.activeNode = node;
+    state.visiblePrefix = output;
+  }
+
+  return { text: output, sawOpeningTag, changed };
 }
 
 // ─── DOM Observer (background image patching + tool block) ────────
@@ -607,7 +748,14 @@ function setupDOMObserver() {
     for (const mutation of mutations) {
       if (mutation.type === 'characterData') {
         const text = mutation.target.textContent || '';
-        if (text.includes('<memory_save') || text.includes('<memory_update') || text.includes('<memory_delete')) {
+        const parent = mutation.target.parentElement;
+        const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
+        if (
+          text.includes('<memory_save') ||
+          text.includes('<memory_update') ||
+          text.includes('<memory_delete') ||
+          (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
+        ) {
           needsCleanup = true;
         }
         continue;
@@ -618,12 +766,25 @@ function setupDOMObserver() {
           const el = node as HTMLElement;
           if (el.classList?.contains(BLOCK_CLASS)) continue;
           const text = el.textContent || '';
-          if (text.includes('<memory_save') || text.includes('<memory_update') || text.includes('<memory_delete')) {
+          const assistantMessage = getAssistantMessageRoot(el);
+          if (
+            text.includes('<memory_save') ||
+            text.includes('<memory_update') ||
+            text.includes('<memory_delete') ||
+            (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
+          ) {
             needsCleanup = true;
           }
         } else if (node.nodeType === Node.TEXT_NODE) {
           const text = node.textContent || '';
-          if (text.includes('<memory_save') || text.includes('<memory_update') || text.includes('<memory_delete')) {
+          const parent = node.parentElement;
+          const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
+          if (
+            text.includes('<memory_save') ||
+            text.includes('<memory_update') ||
+            text.includes('<memory_delete') ||
+            (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
+          ) {
             needsCleanup = true;
           }
         }

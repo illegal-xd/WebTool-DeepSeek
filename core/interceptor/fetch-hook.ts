@@ -38,6 +38,14 @@ let hookState: HookState = {
 
 let originalFetch: typeof window.fetch | null = null;
 
+interface ToolStreamFilterState {
+  insideToolBlock: boolean;
+  sseRemainder: string;
+}
+
+const TOOL_OPEN_TAG_REGEX = /<(memory_save|memory_update|memory_delete)>/g;
+const TOOL_END_TAG_REGEX = /<\/(memory_save|memory_update|memory_delete)>/g;
+
 export function updateHookState(partial: Partial<HookState>) {
   hookState = { ...hookState, ...partial };
 }
@@ -323,15 +331,135 @@ async function executeToolCalls(fullText: string): Promise<void> {
   }
 }
 
+function filterSSEChunkForDisplay(chunk: string, state: ToolStreamFilterState): string {
+  state.sseRemainder += chunk;
+
+  const splitIndex = state.sseRemainder.lastIndexOf('\n\n');
+  if (splitIndex === -1) return '';
+
+  const complete = state.sseRemainder.slice(0, splitIndex + 2);
+  state.sseRemainder = state.sseRemainder.slice(splitIndex + 2);
+
+  return complete
+    .split('\n\n')
+    .filter((block) => block.length > 0)
+    .map((block) => filterSSEBlockForDisplay(block, state))
+    .join('\n\n') + '\n\n';
+}
+
+function flushFilteredSSE(state: ToolStreamFilterState): string {
+  if (!state.sseRemainder) return '';
+  const flushed = filterSSEBlockForDisplay(state.sseRemainder, state);
+  state.sseRemainder = '';
+  return flushed ? flushed + '\n\n' : '';
+}
+
+function filterSSEBlockForDisplay(block: string, state: ToolStreamFilterState): string {
+  const lines = block.split('\n');
+
+  return lines.map((line) => {
+    if (!line.startsWith('data:')) return line;
+
+    const rawData = line.slice(5).trim();
+    const parsed = parseSSEData(rawData);
+    if (!parsed) return line;
+
+    const filtered = filterParsedTextForDisplay(parsed, state);
+    if (!filtered.changed) return line;
+
+    return `data: ${JSON.stringify(filtered.value)}`;
+  }).join('\n');
+}
+
+function filterParsedTextForDisplay(parsed: unknown, state: ToolStreamFilterState): { value: unknown; changed: boolean } {
+  if (!parsed || typeof parsed !== 'object') return { value: parsed, changed: false };
+
+  if (Array.isArray(parsed)) {
+    let changed = false;
+    const value = parsed.map((item) => {
+      const filtered = filterParsedTextForDisplay(item, state);
+      changed ||= filtered.changed;
+      return filtered.value;
+    });
+    return { value, changed };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  let changed = false;
+  const next: Record<string, unknown> = { ...record };
+
+  if (typeof record.v === 'string') {
+    const filtered = filterToolMarkupFromText(record.v, state);
+    if (filtered.changed) {
+      next.v = filtered.text;
+      changed = true;
+    }
+  } else if (Array.isArray(record.v)) {
+    const filteredItems = record.v.map((item) => {
+      const filtered = filterParsedTextForDisplay(item, state);
+      changed ||= filtered.changed;
+      return filtered.value;
+    });
+    if (changed) next.v = filteredItems;
+  }
+
+  if (typeof record.content === 'string') {
+    const filtered = filterToolMarkupFromText(record.content, state);
+    if (filtered.changed) {
+      next.content = filtered.text;
+      changed = true;
+    }
+  }
+
+  return { value: changed ? next : parsed, changed };
+}
+
+function filterToolMarkupFromText(text: string, state: ToolStreamFilterState): { text: string; changed: boolean } {
+  let output = '';
+  let cursor = 0;
+  let changed = false;
+
+  while (cursor < text.length) {
+    if (state.insideToolBlock) {
+      TOOL_END_TAG_REGEX.lastIndex = cursor;
+      const endMatch = TOOL_END_TAG_REGEX.exec(text);
+      if (!endMatch) {
+        changed = true;
+        break;
+      }
+      cursor = endMatch.index + endMatch[0].length;
+      state.insideToolBlock = false;
+      changed = true;
+      continue;
+    }
+
+    TOOL_OPEN_TAG_REGEX.lastIndex = cursor;
+    const openMatch = TOOL_OPEN_TAG_REGEX.exec(text);
+    if (!openMatch) {
+      output += text.slice(cursor);
+      break;
+    }
+
+    output += text.slice(cursor, openMatch.index);
+    cursor = openMatch.index + openMatch[0].length;
+    state.insideToolBlock = true;
+    changed = true;
+  }
+
+  return { text: output, changed };
+}
+
 async function interceptFetchResponse(responsePromise: Promise<Response>): Promise<Response> {
   const response = await responsePromise;
   if (!response.body) return response;
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   let fullText = '';
   let notifiedCount = 0;
   let completed = false;
+  const displayFilterState: ToolStreamFilterState = { insideToolBlock: false, sseRemainder: '' };
 
   const finalizeIfNeeded = () => {
     if (completed) return;
@@ -347,14 +475,21 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
+          const flushed = flushFilteredSSE(displayFilterState);
+          if (flushed) {
+            controller.enqueue(encoder.encode(flushed));
+          }
           finalizeIfNeeded();
           controller.close();
           break;
         }
 
-        controller.enqueue(value);
-
         const chunk = decoder.decode(value, { stream: true });
+        const filteredChunk = filterSSEChunkForDisplay(chunk, displayFilterState);
+        if (filteredChunk) {
+          controller.enqueue(encoder.encode(filteredChunk));
+        }
+
         const events = parseSSEChunk(chunk);
         for (const event of events) {
           const parsed = parseSSEData(event.data);
