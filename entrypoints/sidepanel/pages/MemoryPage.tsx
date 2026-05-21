@@ -158,6 +158,19 @@ export default function MemoryPage() {
       <div className="text-[11px] text-center pt-1" style={{ color: 'var(--ds-text-tertiary)' }}>
         共 {memories.length} 条记忆
       </div>
+
+      <div className="ds-info-panel rounded-xl p-3.5">
+        <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
+          在 DeepSeek 输入框中输入{' '}
+          <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
+            #记忆名
+          </code>{' '}
+          触发。例如：
+          <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
+            #记忆-对话规则 给我一句每日英语句子
+          </code>
+        </p>
+      </div>
     </div>
   );
 }

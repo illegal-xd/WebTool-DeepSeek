@@ -1,5 +1,6 @@
 import { installFetchHook, updateHookState } from '../core/interceptor/fetch-hook';
 import { initSkillPopup } from '../core/ui/skill-popup';
+import { initMemoryPopup } from '../core/ui/memory-popup';
 import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall } from '../core/types';
 
 export default defineContentScript({
@@ -46,6 +47,7 @@ export default defineContentScript({
           };
           updateHookState({ memories, skills, activePreset, modelType });
           initSkillPopup(skills);
+          initMemoryPopup(memories);
           break;
         }
       }

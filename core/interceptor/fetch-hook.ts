@@ -114,6 +114,26 @@ function modifyRequestBody(bodyStr: string): string | null {
     body.model_type = hookState.modelType;
   }
 
+  const memInvocation = parseMemoryCommand(originalPrompt, hookState.memories);
+  if (memInvocation) {
+    const { memory, args } = memInvocation;
+    let prompt = wrapMemoryInput(memory.name, memory.content, args);
+
+    if (hookState.memories.length > 0) {
+      const { augmented } = buildAugmentedPrompt(prompt, hookState.memories, {
+        thinkingEnabled,
+        identityOnly: true,
+      });
+      prompt = augmented;
+    }
+
+    body.prompt = presetPrefix + prompt;
+    if (memory.id != null) {
+      hookState.onMemoriesUsed([memory.id]);
+    }
+    return JSON.stringify(body);
+  }
+
   const invocation = parseSkillCommand(originalPrompt);
   if (invocation) {
     const resolved = resolveSkills(invocation.skillName, invocation.args);
@@ -313,4 +333,53 @@ function setupXHRResponseInterceptor(xhr: XMLHttpRequest) {
     }
     if (xhr.readyState === 4) finalizeIfNeeded();
   });
+}
+
+interface MemoryInvocation {
+  memory: Memory;
+  args: string;
+  rawInput: string;
+}
+
+function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation | null {
+  if (!input.startsWith('#')) return null;
+
+  const inputLower = input.toLowerCase();
+  const sortedMemories = [...memories].sort((a, b) => b.name.length - a.name.length);
+
+  for (const m of sortedMemories) {
+    // Check by name
+    const prefixName = `#${m.name.toLowerCase()}`;
+    if (inputLower === prefixName) {
+      return { memory: m, args: '', rawInput: input };
+    }
+    if (inputLower.startsWith(prefixName + ' ')) {
+      return { memory: m, args: input.slice(prefixName.length + 1), rawInput: input };
+    }
+    if (inputLower.startsWith(prefixName + '\n')) {
+      return { memory: m, args: input.slice(prefixName.length + 1), rawInput: input };
+    }
+
+    // Check by ID
+    if (m.id != null) {
+      const prefixId = `#${m.id}`;
+      if (inputLower === prefixId) {
+        return { memory: m, args: '', rawInput: input };
+      }
+      if (inputLower.startsWith(prefixId + ' ')) {
+        return { memory: m, args: input.slice(prefixId.length + 1), rawInput: input };
+      }
+      if (inputLower.startsWith(prefixId + '\n')) {
+        return { memory: m, args: input.slice(prefixId.length + 1), rawInput: input };
+      }
+    }
+  }
+
+  return null;
+}
+
+function wrapMemoryInput(memoryName: string, memoryContent: string, userInput: string): string {
+  const header = `背景信息（记忆：${memoryName}）：\n${memoryContent}`;
+  if (!userInput) return header;
+  return `${header}\n\n---\n\n以下是用户本次的输入：\n\n${userInput}`;
 }

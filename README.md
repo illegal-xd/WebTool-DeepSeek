@@ -55,19 +55,25 @@
 ✅ 优化了新增、编辑表单样式、操作  
 ✅ 内置 Skill 增加折叠展开能力、自定义 Skill 现在可以手动编辑  
 ✅ Skill、预设新增编辑增加独立记忆能力选择列表、可搜索  
-✅ 数据管理导入导出新增自定义 Skill 与预设  
-
 <p align="center">
   <img src="assets/screenshot-operation-mode.png" width="600" alt="优化表单">
-  <br>
+</p>
+
+✅ 数据管理导入导出新增自定义 Skill 与预设  
+<p align="center">
   <img src="assets/screenshot-operation-save.png" width="600" alt="优化数据管理">
 </p>
 
-## 待优化
+✅ 增加记忆模块快捷选择 `#`  
+<p> align="center"
+  <img src="assets/screenshot-memory-select.png" width="600" alt="优化记忆选择">
+</p>
 
-- 增加与DeepSeek交流时用户对话框内容折叠【配置的Skill与预设】，防止提示词太长导致上下滚动操作加巨
-- 增加暗黑主题适配
-- 增加一键打包成完整的插件模式，下载即用
+- [ ] 增加预设提示词快捷选择 `@`
+- [ ] 新增 Message 对话绑定预设提示词
+- [ ] 增加与DeepSeek交流时用户对话框内容折叠【配置的Skill与预设】，防止提示词太长导致上下滚动操作加巨
+- [ ] 增加暗黑主题适配
+- [ ] 增加一键打包成完整的插件模式，下载即用
 
 ## 安装
 
