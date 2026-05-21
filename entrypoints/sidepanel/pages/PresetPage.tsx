@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SystemPromptPreset } from '../../../core/types';
+import { sortPresetsByWeight } from '../../../core/weighting';
 import PresetCard from '../components/PresetCard';
 import PresetForm from '../components/PresetForm';
 
@@ -133,7 +134,7 @@ export default function PresetPage() {
             className="hidden"
             onChange={(e) => e.target.files?.length && handleImportFiles(e.target.files)}
           />
-          <button
+          {/* <button
             onClick={() => fileInputRef.current?.click()}
             className="ds-btn-cancel px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 flex items-center gap-1"
           >
@@ -141,7 +142,7 @@ export default function PresetPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
             </svg>
             导入
-          </button>
+          </button> */}
           <button
             onClick={() => { setEditing(undefined); setShowForm(!showForm); }}
             className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1"
@@ -171,7 +172,7 @@ export default function PresetPage() {
       )}
 
       <div className="space-y-2">
-        {presets.map((p) => (
+        {sortPresetsByWeight(presets).map((p) => (
           <PresetCard
             key={p.id}
             preset={p}

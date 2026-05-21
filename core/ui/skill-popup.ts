@@ -1,4 +1,5 @@
 import type { Skill } from '../types';
+import { sortSkillsByWeight } from '../weighting';
 
 let popupEl: HTMLElement | null = null;
 let skills: Skill[] = [];
@@ -44,8 +45,11 @@ function onInput() {
   if (val.startsWith('/') && !val.slice(1).includes(' ')) {
     const query = val.slice(1).toLowerCase();
     filtered = query === ''
-      ? [...skills]
-      : skills.filter(s => s.name.toLowerCase().startsWith(query));
+      ? sortSkillsByWeight(skills)
+      : sortSkillsByWeight(
+          skills.filter(s => s.name.toLowerCase().includes(query) || s.description.toLowerCase().includes(query)),
+          query,
+        );
     if (filtered.length > 0) {
       activeIdx = 0;
       showPopup();

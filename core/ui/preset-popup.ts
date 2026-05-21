@@ -1,4 +1,5 @@
 import type { SystemPromptPreset } from '../types';
+import { sortPresetsByWeight } from '../weighting';
 
 let popupEl: HTMLElement | null = null;
 let presets: SystemPromptPreset[] = [];
@@ -53,7 +54,13 @@ function onInput() {
       updatedAt: 0,
     };
 
-    const candidates = [closeItem, ...presets];
+    const sortedPresets = sortPresetsByWeight(presets, query);
+    const candidates = query === ''
+      ? [closeItem, ...sortedPresets]
+      : [
+          ...(closeItem.name.includes(query) || closeItem.content.includes(query) ? [closeItem] : []),
+          ...sortedPresets,
+        ];
 
     filtered = query === ''
       ? candidates

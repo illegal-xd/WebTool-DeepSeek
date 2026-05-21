@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Skill } from '../../../core/types';
+import { sortSkillsByWeight } from '../../../core/weighting';
 import SkillCard from '../components/SkillCard';
 import SkillForm from '../components/SkillForm';
 
@@ -121,8 +122,8 @@ export default function SkillPage() {
     setIsFormWide(false);
   };
 
-  const builtin = skills.filter((s) => s.source === 'builtin');
-  const custom = skills.filter((s) => s.source === 'custom');
+  const builtin = sortSkillsByWeight(skills.filter((s) => s.source === 'builtin'));
+  const custom = sortSkillsByWeight(skills.filter((s) => s.source === 'custom'));
 
   return (
     <div className="p-4 space-y-4">

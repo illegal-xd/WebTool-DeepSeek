@@ -67,6 +67,13 @@ export default defineContentScript({
           ids,
         });
       },
+      onSkillUsed(name: string) {
+        window.postMessage({
+          source: 'WebTool-DeepSeek-main',
+          type: 'SKILL_USED',
+          name,
+        });
+      },
     });
 
     window.addEventListener('message', (event) => {

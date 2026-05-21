@@ -1,5 +1,6 @@
 import type { Memory } from '../types';
 import { MEMORY_TOKEN_BUDGET, STOP_WORDS } from '../constants';
+import { memoryWeight } from '../weighting';
 
 const segmenter =
   typeof Intl !== 'undefined' && Intl.Segmenter
@@ -91,11 +92,7 @@ export function selectMemories(
 
   const scored = candidates.map((m) => ({
     memory: m,
-    score:
-      (m.pinned ? 1000 : 0) +
-      keywordScore(promptWords, m) +
-      decayScore(m) +
-      (Date.now() - m.lastAccessedAt < 3600_000 ? 5 : 0),
+    score: memoryWeight(m, keywordScore(promptWords, m)) + decayScore(m),
   }));
 
   scored.sort((a, b) => b.score - a.score);

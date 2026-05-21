@@ -83,6 +83,11 @@ export default defineContentScript({
           await chrome.runtime.sendMessage({ type: 'TOUCH_MEMORIES', payload: { ids } });
           break;
         }
+        case 'SKILL_USED': {
+          const name = event.data.name as string;
+          await chrome.runtime.sendMessage({ type: 'TOUCH_USAGE', payload: { kind: 'skill', name } });
+          break;
+        }
         case 'RESPONSE_COMPLETE': {
           await finalizeResponse();
           break;

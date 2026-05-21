@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Memory, MemoryType, NewMemory } from '../../../core/types';
+import { memoryWeight } from '../../../core/weighting';
 import MemoryCard from '../components/MemoryCard';
 import MemoryForm from '../components/MemoryForm';
 import { MEMORY_TYPE_CONFIG } from '../constants';
@@ -46,7 +47,12 @@ export default function MemoryPage() {
     };
   }, [showForm]);
 
-  const filtered = filter === 'all' ? memories : memories.filter((m) => m.type === filter);
+  const filtered = (filter === 'all' ? memories : memories.filter((m) => m.type === filter))
+    .toSorted((a, b) => (
+      memoryWeight(b) - memoryWeight(a) ||
+      b.lastAccessedAt - a.lastAccessedAt ||
+      a.name.localeCompare(b.name)
+    ));
 
   const handleDelete = async (id: number) => {
     if (editingMemory?.id === id) {

@@ -20,6 +20,7 @@ interface HookState {
   onMemoriesUsed: (ids: number[]) => void;
   onToolCallExecuted: (call: ToolCall) => Promise<ToolCardResult>;
   onToolCallsRestored: (records: ToolCallRestoreRecord[]) => void;
+  onSkillUsed: (name: string) => void;
 }
 
 let hookState: HookState = {
@@ -34,6 +35,7 @@ let hookState: HookState = {
   onMemoriesUsed: () => {},
   onToolCallExecuted: async () => ({ ok: true, summary: '已识别' }),
   onToolCallsRestored: () => {},
+  onSkillUsed: () => {},
 };
 
 let originalFetch: typeof window.fetch | null = null;
@@ -170,6 +172,7 @@ function modifyRequestBody(bodyStr: string): string | null {
       }
 
       body.prompt = presetPrefix + prompt;
+      hookState.onSkillUsed(invocation.skillName);
       return JSON.stringify(body);
     }
   }

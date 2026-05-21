@@ -1,22 +1,50 @@
 import type { SystemPromptPreset } from '../types';
+import { normalizeUsageStats } from '../weighting';
 
 const STORAGE_KEY = 'deepseek_pp_presets';
 const ACTIVE_KEY = 'deepseek_pp_active_preset_id';
 
+function normalizePreset(preset: SystemPromptPreset): SystemPromptPreset {
+  return {
+    ...preset,
+    usage: normalizeUsageStats(preset.usage),
+  };
+}
+
 export async function getAllPresets(): Promise<SystemPromptPreset[]> {
   const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, unknown>;
   const items = data[STORAGE_KEY];
-  return Array.isArray(items) ? (items as SystemPromptPreset[]) : [];
+  return Array.isArray(items) ? (items as SystemPromptPreset[]).map(normalizePreset) : [];
 }
 
 export async function savePreset(preset: SystemPromptPreset): Promise<void> {
   const presets = await getAllPresets();
   const idx = presets.findIndex((p) => p.id === preset.id);
+  const nextPreset = normalizePreset(idx >= 0 ? { ...presets[idx], ...preset } : preset);
   if (idx >= 0) {
-    presets[idx] = preset;
+    presets[idx] = nextPreset;
   } else {
-    presets.push(preset);
+    presets.push(nextPreset);
   }
+  await chrome.storage.local.set({ [STORAGE_KEY]: presets });
+}
+
+export async function touchPreset(id: string): Promise<void> {
+  const presets = await getAllPresets();
+  const idx = presets.findIndex((p) => p.id === id);
+  if (idx === -1) return;
+
+  const now = Date.now();
+  const usage = normalizeUsageStats(presets[idx].usage);
+  presets[idx] = {
+    ...presets[idx],
+    usage: {
+      ...usage,
+      useCount: usage.useCount + 1,
+      lastUsedAt: now,
+      updatedAt: now,
+    },
+  };
   await chrome.storage.local.set({ [STORAGE_KEY]: presets });
 }
 
@@ -53,5 +81,5 @@ export async function getActivePreset(): Promise<SystemPromptPreset | null> {
 }
 
 export async function replaceAllPresets(presets: SystemPromptPreset[]): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: presets });
+  await chrome.storage.local.set({ [STORAGE_KEY]: presets.map(normalizePreset) });
 }

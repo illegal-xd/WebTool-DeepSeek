@@ -11,6 +11,73 @@ const DEFAULT_SYNC_CONFIG: SyncConfig = {
 };
 
 type SyncStatus = 'idle' | 'testing' | 'syncing' | 'success' | 'error';
+type BackupDataType = 'memories' | 'skills' | 'presets';
+
+const BACKUP_OPTIONS: { key: BackupDataType; label: string; getCount: (counts: { memories: number; skills: number; presets: number }) => number }[] = [
+  { key: 'memories', label: '记忆', getCount: (counts) => counts.memories },
+  { key: 'skills', label: 'Skill', getCount: (counts) => counts.skills },
+  { key: 'presets', label: '预设', getCount: (counts) => counts.presets },
+];
+
+type BackupSelection = Record<BackupDataType, boolean>;
+
+interface BackupPayload {
+  type: 'deepseek_pp_backup';
+  version: string;
+  exportedAt: number;
+  includes: BackupSelection;
+  memories?: Memory[];
+  skills?: Skill[];
+  presets?: SystemPromptPreset[];
+}
+
+interface ParsedBackupData {
+  memories: Memory[];
+  skills: Skill[];
+  presets: SystemPromptPreset[];
+}
+
+const DEFAULT_BACKUP_SELECTION: BackupSelection = {
+  memories: true,
+  skills: true,
+  presets: true,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function arrayFromRecord<T>(record: Record<string, unknown>, key: string): T[] {
+  const value = record[key];
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function parseBackupData(parsed: unknown): ParsedBackupData {
+  if (Array.isArray(parsed)) {
+    return { memories: parsed as Memory[], skills: [], presets: [] };
+  }
+
+  if (isRecord(parsed) && parsed.type === 'deepseek_pp_backup') {
+    return {
+      memories: arrayFromRecord<Memory>(parsed, 'memories'),
+      skills: arrayFromRecord<Skill>(parsed, 'skills'),
+      presets: arrayFromRecord<SystemPromptPreset>(parsed, 'presets'),
+    };
+  }
+
+  throw new Error('未知的 JSON 备份格式');
+}
+
+function mergeMemoryForImport(imported: Memory, existing: Memory): Memory {
+  return {
+    ...existing,
+    ...imported,
+    id: existing.id,
+    syncId: existing.syncId,
+    accessCount: Math.max(existing.accessCount ?? 0, imported.accessCount ?? 0),
+    lastAccessedAt: Math.max(existing.lastAccessedAt ?? 0, imported.lastAccessedAt ?? 0),
+  };
+}
 
 export default function SettingsPage() {
   const [memoryCount, setMemoryCount] = useState(0);
@@ -20,6 +87,7 @@ export default function SettingsPage() {
   const [syncConfig, setSyncConfig] = useState<SyncConfig>(DEFAULT_SYNC_CONFIG);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
   const [syncMessage, setSyncMessage] = useState('');
+  const [backupSelection, setBackupSelection] = useState<BackupSelection>(DEFAULT_BACKUP_SELECTION);
   const [expertMode, setExpertMode] = useState(false);
   const [bgEnabled, setBgEnabled] = useState(false);
   const [bgType, setBgType] = useState<'upload' | 'url'>('upload');
@@ -30,6 +98,7 @@ export default function SettingsPage() {
   const opacitySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const bgPreview = bgType === 'url' ? bgUrl : bgImageData;
+  const hasBackupSelection = Object.values(backupSelection).some(Boolean);
 
   const loadCounts = async () => {
     const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
@@ -210,19 +279,33 @@ export default function SettingsPage() {
       }
     });
 
-  const handleExport = async () => {
-    const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
-    const skills: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
-    const customSkills = skills?.filter(s => s.source === 'custom') ?? [];
-    const presets: SystemPromptPreset[] = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
+  const toggleBackupSelection = (key: BackupDataType) => {
+    setBackupSelection((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
-    const exportData = {
+  const handleExport = async () => {
+    if (!hasBackupSelection) {
+      alert('请至少选择一种要导出的数据');
+      return;
+    }
+
+    const exportData: BackupPayload = {
       type: 'deepseek_pp_backup',
-      version: '1.0.0',
-      memories,
-      skills: customSkills,
-      presets,
+      version: '1.1.0',
+      exportedAt: Date.now(),
+      includes: backupSelection,
     };
+
+    if (backupSelection.memories) {
+      exportData.memories = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
+    }
+    if (backupSelection.skills) {
+      const skills: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
+      exportData.skills = skills?.filter(s => s.source === 'custom') ?? [];
+    }
+    if (backupSelection.presets) {
+      exportData.presets = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
+    }
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -242,39 +325,34 @@ export default function SettingsPage() {
       if (!file) return;
       const text = await file.text();
       try {
-        const parsed = JSON.parse(text);
-        
-        let memoriesToImport: Memory[] = [];
-        let skillsToImport: Skill[] = [];
-        let presetsToImport: SystemPromptPreset[] = [];
+        const parsed = parseBackupData(JSON.parse(text));
 
-        if (Array.isArray(parsed)) {
-          memoriesToImport = parsed;
-        } else if (parsed && parsed.type === 'deepseek_pp_backup') {
-          memoriesToImport = parsed.memories ?? [];
-          skillsToImport = parsed.skills ?? [];
-          presetsToImport = parsed.presets ?? [];
-        } else {
-          throw new Error('未知的 JSON 备份格式');
+        const existingMemories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
+        const existingBySyncId = new Map(
+          existingMemories
+            .filter((mem) => mem.syncId)
+            .map((mem) => [mem.syncId, mem]),
+        );
+
+        for (const mem of parsed.memories) {
+          const existing = mem.syncId ? existingBySyncId.get(mem.syncId) : undefined;
+          if (existing) {
+            await chrome.runtime.sendMessage({ type: 'UPDATE_MEMORY', payload: mergeMemoryForImport(mem, existing) });
+          } else {
+            const { id, createdAt, updatedAt, accessCount, lastAccessedAt, ...rest } = mem;
+            await chrome.runtime.sendMessage({ type: 'SAVE_MEMORY', payload: rest });
+          }
         }
 
-        // Import memories
-        for (const mem of memoriesToImport) {
-          const { id, createdAt, updatedAt, accessCount, lastAccessedAt, ...rest } = mem;
-          await chrome.runtime.sendMessage({ type: 'SAVE_MEMORY', payload: rest });
+        for (const skill of parsed.skills) {
+          await chrome.runtime.sendMessage({ type: 'SAVE_SKILL', payload: { ...skill, source: 'custom' } });
         }
 
-        // Import custom skills
-        for (const skill of skillsToImport) {
-          await chrome.runtime.sendMessage({ type: 'SAVE_SKILL', payload: skill });
-        }
-
-        // Import presets
-        for (const preset of presetsToImport) {
+        for (const preset of parsed.presets) {
           await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
         }
 
-        alert('导入成功');
+        alert(`导入成功：记忆 ${parsed.memories.length} 条，Skill ${parsed.skills.length} 个，预设 ${parsed.presets.length} 个`);
         loadCounts();
       } catch (e) {
         alert('导入失败: ' + (e as Error).message);
@@ -617,7 +695,7 @@ export default function SettingsPage() {
         <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
           数据管理
         </h2>
-
+{/* 
         <div className="ds-surface-panel rounded-xl p-4 space-y-3">
           <div className="flex justify-between items-center text-xs">
             <span style={{ color: 'var(--ds-text-secondary)' }}>记忆总数</span>
@@ -639,11 +717,57 @@ export default function SettingsPage() {
               {presetCount} 个
             </span>
           </div>
+        </div> */}
+
+        <div className="ds-surface-panel rounded-xl p-4 space-y-2">
+          <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+            导出数据选择
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {BACKUP_OPTIONS.map((option) => {
+              const selected = backupSelection[option.key];
+              const count = option.getCount({ memories: memoryCount, skills: customSkillCount, presets: presetCount });
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => toggleBackupSelection(option.key)}
+                  className="rounded-lg border px-2.5 py-2 text-left transition-all duration-150"
+                  style={{
+                    borderColor: selected ? 'var(--ds-blue)' : 'var(--ds-border)',
+                    background: selected ? 'rgba(77, 107, 254, 0.08)' : 'var(--ds-bg)',
+                    color: selected ? 'var(--ds-blue)' : 'var(--ds-text-secondary)',
+                  }}
+                >
+                  <span className="flex items-center gap-1.5 text-[11px] font-medium">
+                    <span
+                      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded border text-[9px]"
+                      style={{
+                        borderColor: selected ? 'var(--ds-blue)' : 'var(--ds-border)',
+                        background: selected ? 'var(--ds-blue)' : 'transparent',
+                        color: selected ? '#fff' : 'transparent',
+                      }}
+                    >
+                      ✓
+                    </span>
+                    {option.label}
+                  </span>
+                  <span className="mt-1 block text-[10px]" style={{ color: 'var(--ds-text-tertiary)' }}>
+                    {count} {option.key === 'memories' ? '条' : '个'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-[10px] leading-relaxed" style={{ color: 'var(--ds-text-tertiary)' }}>
+            导入备份会与当前数据合并：同一记忆 syncId、同名 Skill、同 ID 预设会更新，不会清空现有数据。
+          </div>
         </div>
 
         <div className="flex gap-2">
           <button
             onClick={handleExport}
+            disabled={!hasBackupSelection}
             className="ds-btn-secondary flex-1 py-2.5 text-xs font-medium rounded-lg transition-all duration-150 flex items-center justify-center gap-1.5"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

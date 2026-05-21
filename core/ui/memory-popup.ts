@@ -1,4 +1,5 @@
 import type { Memory } from '../types';
+import { memoryWeight } from '../weighting';
 
 let popupEl: HTMLElement | null = null;
 let memories: Memory[] = [];
@@ -44,13 +45,13 @@ function onInput() {
   if (val.startsWith('#') && !val.slice(1).includes(' ')) {
     const query = val.slice(1).toLowerCase();
     filtered = query === ''
-      ? [...memories]
-      : memories.filter(
+      ? sortMemoriesForPopup(memories)
+      : sortMemoriesForPopup(memories.filter(
           m =>
             m.name.toLowerCase().includes(query) ||
             m.tags.some(t => t.toLowerCase().includes(query)) ||
             (m.id != null && m.id.toString() === query)
-        );
+        ), query);
     if (filtered.length > 0) {
       activeIdx = 0;
       showPopup();
@@ -58,6 +59,25 @@ function onInput() {
     }
   }
   hidePopup();
+}
+
+function memoryPopupMatchScore(memory: Memory, query: string): number {
+  if (!query) return 0;
+  const name = memory.name.toLowerCase();
+  if (name === query) return 1000;
+  if (name.startsWith(query)) return 600;
+  if (name.includes(query)) return 300;
+  if (memory.tags.some((tag) => tag.toLowerCase().includes(query))) return 180;
+  if (memory.id != null && memory.id.toString() === query) return 900;
+  return 0;
+}
+
+function sortMemoriesForPopup(items: Memory[], query = ''): Memory[] {
+  return [...items].sort((a, b) => (
+    memoryWeight(b, memoryPopupMatchScore(b, query)) - memoryWeight(a, memoryPopupMatchScore(a, query)) ||
+    b.lastAccessedAt - a.lastAccessedAt ||
+    a.name.localeCompare(b.name)
+  ));
 }
 
 function onKeydown(e: KeyboardEvent) {

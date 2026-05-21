@@ -1,6 +1,14 @@
 export type MemoryType = 'user' | 'feedback' | 'topic' | 'reference';
+export type MemoryScope = 'permanent' | 'contextual' | 'temporary';
 
 export type ModelType = 'expert' | null;
+
+export interface UsageStats {
+  useCount: number;
+  lastUsedAt: number | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
 
 export interface BackgroundConfig {
   enabled: boolean;
@@ -14,6 +22,7 @@ export interface Memory {
   id?: number;
   syncId: string;
   type: MemoryType;
+  scope: MemoryScope;
   name: string;
   content: string;
   description: string;
@@ -23,6 +32,7 @@ export interface Memory {
   updatedAt: number;
   accessCount: number;
   lastAccessedAt: number;
+  expiresAt?: number;
 }
 
 export interface SyncConfig {
@@ -42,6 +52,7 @@ export interface Skill {
   source: SkillSource;
   memoryEnabled: boolean;
   memoryIds?: number[];
+  usage?: UsageStats;
   metadata?: Record<string, string>;
 }
 
@@ -86,6 +97,8 @@ export type NewMemory = {
   tags: string[];
   pinned: boolean;
   syncId?: string;
+  scope?: MemoryScope;
+  expiresAt?: number;
 };
 
 export interface SystemPromptPreset {
@@ -96,6 +109,7 @@ export interface SystemPromptPreset {
   updatedAt: number;
   memoryEnabled?: boolean;
   memoryIds?: number[];
+  usage?: UsageStats;
 }
 
 export interface DeepSeekRequest {
@@ -132,6 +146,7 @@ export type MessageAction =
   | { type: 'GET_CONFIG' }
   | { type: 'GET_MODEL_TYPE' }
   | { type: 'SET_MODEL_TYPE'; payload: ModelType }
+  | { type: 'TOUCH_USAGE'; payload: { kind: 'memory'; id: number } | { kind: 'skill'; name: string } | { kind: 'preset'; id: string } }
   | { type: 'TOOL_CALL_EXECUTED'; payload: ToolCall }
   | { type: 'MEMORIES_UPDATED' }
   | { type: 'WEBDAV_TEST'; payload: Omit<SyncConfig, 'lastSyncAt'> }

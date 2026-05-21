@@ -8,7 +8,7 @@ import {
   replaceAllMemories,
   archiveStaleMemories,
 } from '../core/memory/store';
-import { getAllSkills, saveSkill, deleteSkill, replaceAllCustomSkills } from '../core/skill/registry';
+import { getAllSkills, saveSkill, deleteSkill, replaceAllCustomSkills, touchSkill } from '../core/skill/registry';
 import {
   getAllPresets,
   savePreset,
@@ -16,6 +16,7 @@ import {
   getActivePreset,
   setActivePresetId,
   replaceAllPresets,
+  touchPreset,
 } from '../core/preset/store';
 import { getModelType, setModelType } from '../core/model/store';
 import { getBackgroundConfig, saveBackgroundConfig, clearBackgroundConfig } from '../core/background/store';
@@ -77,6 +78,23 @@ async function handleMessage(
       return { ok: true };
     }
 
+    case 'TOUCH_USAGE': {
+      const target = message.payload as
+        | { kind: 'memory'; id: number }
+        | { kind: 'skill'; name: string }
+        | { kind: 'preset'; id: string };
+      if (target.kind === 'memory') {
+        await touchMemories([target.id]);
+      } else if (target.kind === 'skill') {
+        await touchSkill(target.name);
+        await broadcastStateUpdate(sender.tab?.id);
+      } else if (target.kind === 'preset') {
+        await touchPreset(target.id);
+        await broadcastStateUpdate(sender.tab?.id);
+      }
+      return { ok: true };
+    }
+
     case 'GET_SKILLS':
       return getAllSkills();
 
@@ -112,6 +130,9 @@ async function handleMessage(
     case 'SET_ACTIVE_PRESET': {
       const { id: activeId } = message.payload as { id: string | null };
       await setActivePresetId(activeId);
+      if (activeId) {
+        await touchPreset(activeId);
+      }
       await broadcastStateUpdate(sender.tab?.id);
       return { ok: true };
     }
@@ -120,7 +141,7 @@ async function handleMessage(
       return getActivePreset();
 
     case 'GET_CONFIG':
-      return { version: '0.2.3' };
+      return { version: '0.3.0' };
 
     case 'GET_MODEL_TYPE':
       return getModelType();
