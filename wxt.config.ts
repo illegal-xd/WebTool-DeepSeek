@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: {
     name: 'WebTool-DeepSeek',
     description: 'Agentic memory & skill system for DeepSeek',
-    version: '0.3.0',
+    version: '0.4.0',
     permissions: ['sidePanel', 'storage'],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
     side_panel: {

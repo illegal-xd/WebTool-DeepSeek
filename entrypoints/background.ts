@@ -151,7 +151,7 @@ async function handleMessage(
       return getActivePreset();
 
     case 'GET_CONFIG':
-      return { version: '0.3.0' };
+      return { version: '0.4.0' };
 
     case 'GET_MODEL_TYPE':
       return getModelType();
