@@ -112,6 +112,37 @@ export interface SystemPromptPreset {
   usage?: UsageStats;
 }
 
+export interface ConversationSession {
+  id: string;
+  title: string;
+  updatedAt: number;
+  createdAt: number;
+  messageCount?: number;
+  categoryIds?: string[];
+  modelType?: string;
+  pinned?: boolean;
+}
+
+export interface ConversationMessage {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  createdAt: number;
+  reasoning?: string;
+  toolCalls?: ToolCall[];
+}
+
+export interface ConversationCategory {
+  id: string;
+  name: string;
+  color: string;
+  createdAt: number;
+  sessionIds: string[];
+}
+
+export type ConversationExportFormat = 'json' | 'md' | 'txt';
+
 export interface DeepSeekRequest {
   chat_session_id: string;
   model_type: string;
@@ -155,7 +186,17 @@ export type MessageAction =
   | { type: 'SAVE_SYNC_CONFIG'; payload: SyncConfig }
   | { type: 'GET_BACKGROUND' }
   | { type: 'SAVE_BACKGROUND'; payload: BackgroundConfig }
-  | { type: 'CLEAR_BACKGROUND' };
+  | { type: 'CLEAR_BACKGROUND' }
+  | { type: 'LIST_SESSIONS' }
+  | { type: 'DELETE_SESSION'; payload: { id: string } }
+  | { type: 'DELETE_SESSIONS'; payload: { ids: string[] } }
+  | { type: 'RENAME_SESSION'; payload: { id: string; title: string } }
+  | { type: 'GET_SESSION_HISTORY'; payload: { id: string } }
+  | { type: 'GET_CONVERSATION_CATEGORIES' }
+  | { type: 'SAVE_CONVERSATION_CATEGORY'; payload: ConversationCategory }
+  | { type: 'DELETE_CONVERSATION_CATEGORY'; payload: { id: string } }
+  | { type: 'ASSIGN_SESSIONS_TO_CATEGORY'; payload: { categoryId: string; sessionIds: string[] } }
+  | { type: 'UNASSIGN_SESSIONS_FROM_CATEGORY'; payload: { categoryId: string; sessionIds: string[] } };
 
 export interface PromptConfig {
   memoryTokenBudget: number;

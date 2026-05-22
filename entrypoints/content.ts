@@ -1,3 +1,9 @@
+import {
+  deleteDeepSeekSession,
+  getDeepSeekSessionHistory,
+  listDeepSeekSessions,
+  renameDeepSeekSession,
+} from '../core/conversation/api';
 import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord } from '../core/types';
 
 const BLOCK_CLASS = 'dpp-tool-block';
@@ -125,10 +131,41 @@ export default defineContentScript({
       }
     });
 
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (typeof message.type !== 'string' || !message.type.startsWith('DS_')) return false;
+      handleConversationRequest(message)
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      return true;
+    });
+
     setupDOMObserver();
     setupToolCleanupObserver();
   },
 });
+
+async function handleConversationRequest(message: { type?: string; payload?: unknown }) {
+  switch (message.type) {
+    case 'DS_LIST_SESSIONS':
+      return { ok: true, data: await listDeepSeekSessions() };
+    case 'DS_DELETE_SESSION': {
+      const { id } = message.payload as { id: string };
+      await deleteDeepSeekSession(id);
+      return { ok: true };
+    }
+    case 'DS_RENAME_SESSION': {
+      const { id, title } = message.payload as { id: string; title: string };
+      await renameDeepSeekSession(id, title);
+      return { ok: true };
+    }
+    case 'DS_GET_SESSION_HISTORY': {
+      const { id } = message.payload as { id: string };
+      return { ok: true, data: await getDeepSeekSessionHistory(id) };
+    }
+    default:
+      return undefined;
+  }
+}
 
 function syncToMainWorld(
   memories: Memory[],

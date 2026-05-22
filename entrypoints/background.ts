@@ -23,7 +23,17 @@ import { getBackgroundConfig, saveBackgroundConfig, clearBackgroundConfig } from
 import { getSyncConfig, saveSyncConfig } from '../core/sync/config';
 import { webdavTest, webdavMkcol, webdavGet, webdavPut } from '../core/sync/webdav-client';
 import { mergeMemories, mergeSkills, mergePresets } from '../core/sync/merge';
-import type { BackgroundConfig, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset } from '../core/types';
+import {
+  assignSessionsToCategory,
+  attachCategoryIds,
+  deleteConversationCategory,
+  getConversationCategories,
+  saveConversationCategory,
+  unassignSessionsFromCategory,
+} from '../core/conversation/store';
+import type { BackgroundConfig, ConversationCategory, ConversationMessage, ConversationSession, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset } from '../core/types';
+
+const NEW_CHAT_URL = 'https://chat.deepseek.com/a/chat';
 
 export default defineBackground(() => {
   chrome.sidePanel
@@ -171,6 +181,67 @@ async function handleMessage(
       return { ok: true };
     }
 
+    case 'LIST_SESSIONS': {
+      const [sessions, categories] = await Promise.all([
+        sendDeepSeekTabMessage<ConversationSession[]>({ type: 'DS_LIST_SESSIONS' }),
+        getConversationCategories(),
+      ]);
+      return attachCategoryIds(sessions, categories);
+    }
+
+    case 'DELETE_SESSION': {
+      const { id } = message.payload as { id: string };
+      await sendDeepSeekTabMessage<void>({ type: 'DS_DELETE_SESSION', payload: { id } });
+      await navigateDeepSeekToNewChat();
+      return { ok: true };
+    }
+
+    case 'DELETE_SESSIONS': {
+      const { ids } = message.payload as { ids: string[] };
+      for (const id of ids) {
+        await sendDeepSeekTabMessage<void>({ type: 'DS_DELETE_SESSION', payload: { id } });
+      }
+      await navigateDeepSeekToNewChat();
+      return { ok: true };
+    }
+
+    case 'RENAME_SESSION': {
+      const { id, title } = message.payload as { id: string; title: string };
+      await sendDeepSeekTabMessage<void>({ type: 'DS_RENAME_SESSION', payload: { id, title } });
+      return { ok: true };
+    }
+
+    case 'GET_SESSION_HISTORY': {
+      const { id } = message.payload as { id: string };
+      return sendDeepSeekTabMessage<ConversationMessage[]>({ type: 'DS_GET_SESSION_HISTORY', payload: { id } });
+    }
+
+    case 'GET_CONVERSATION_CATEGORIES':
+      return getConversationCategories();
+
+    case 'SAVE_CONVERSATION_CATEGORY': {
+      await saveConversationCategory(message.payload as ConversationCategory);
+      return { ok: true };
+    }
+
+    case 'DELETE_CONVERSATION_CATEGORY': {
+      const { id } = message.payload as { id: string };
+      await deleteConversationCategory(id);
+      return { ok: true };
+    }
+
+    case 'ASSIGN_SESSIONS_TO_CATEGORY': {
+      const { categoryId, sessionIds } = message.payload as { categoryId: string; sessionIds: string[] };
+      await assignSessionsToCategory(categoryId, sessionIds);
+      return { ok: true };
+    }
+
+    case 'UNASSIGN_SESSIONS_FROM_CATEGORY': {
+      const { categoryId, sessionIds } = message.payload as { categoryId: string; sessionIds: string[] };
+      await unassignSessionsFromCategory(categoryId, sessionIds);
+      return { ok: true };
+    }
+
     case 'GET_SYNC_CONFIG':
       return getSyncConfig();
 
@@ -232,6 +303,30 @@ async function handleMessage(
     default:
       return null;
   }
+}
+
+async function sendDeepSeekTabMessage<T>(message: { type: string; payload?: unknown }): Promise<T> {
+  const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
+  const target = tabs.find((tab) => tab.active && tab.id !== undefined)
+    ?? tabs.find((tab) => tab.id !== undefined);
+  if (!target?.id) {
+    throw new Error('请先打开并登录 DeepSeek 页面');
+  }
+
+  const response = await chrome.tabs.sendMessage(target.id, message) as { ok?: boolean; data?: T; error?: string } | undefined;
+  if (!response?.ok) {
+    throw new Error(response?.error || 'DeepSeek 页面通信失败，请刷新页面后重试');
+  }
+  return response.data as T;
+}
+
+async function navigateDeepSeekToNewChat() {
+  const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
+  const target = tabs.find((tab) => tab.active && tab.id !== undefined)
+    ?? tabs.find((tab) => tab.id !== undefined);
+  if (!target?.id) return;
+
+  await chrome.tabs.update(target.id, { url: NEW_CHAT_URL });
 }
 
 async function broadcastToTabs(payload: Record<string, unknown>, excludeTabId?: number) {
