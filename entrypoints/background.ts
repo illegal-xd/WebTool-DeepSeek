@@ -211,6 +211,11 @@ async function handleMessage(
       return { ok: true };
     }
 
+    case 'REFRESH_DEEPSEEK_PAGE': {
+      await refreshDeepSeekTab();
+      return { ok: true };
+    }
+
     case 'GET_SESSION_HISTORY': {
       const { id } = message.payload as { id: string };
       return sendDeepSeekTabMessage<ConversationMessage[]>({ type: 'DS_GET_SESSION_HISTORY', payload: { id } });
@@ -327,6 +332,15 @@ async function navigateDeepSeekToNewChat() {
   if (!target?.id) return;
 
   await chrome.tabs.update(target.id, { url: NEW_CHAT_URL });
+}
+
+async function refreshDeepSeekTab() {
+  const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
+  const target = tabs.find((tab) => tab.active && tab.id !== undefined)
+    ?? tabs.find((tab) => tab.id !== undefined);
+  if (!target?.id) return;
+
+  await chrome.tabs.reload(target.id, { bypassCache: true });
 }
 
 async function broadcastToTabs(payload: Record<string, unknown>, excludeTabId?: number) {

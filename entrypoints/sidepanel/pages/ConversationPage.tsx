@@ -204,6 +204,8 @@ export default function ConversationPage() {
     setEditingId(null);
     setEditingTitle('');
     await load();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await chrome.runtime.sendMessage({ type: 'REFRESH_DEEPSEEK_PAGE' });
   };
 
   const handleBatchRename = async () => {

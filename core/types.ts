@@ -191,6 +191,7 @@ export type MessageAction =
   | { type: 'DELETE_SESSION'; payload: { id: string } }
   | { type: 'DELETE_SESSIONS'; payload: { ids: string[] } }
   | { type: 'RENAME_SESSION'; payload: { id: string; title: string } }
+  | { type: 'REFRESH_DEEPSEEK_PAGE' }
   | { type: 'GET_SESSION_HISTORY'; payload: { id: string } }
   | { type: 'GET_CONVERSATION_CATEGORIES' }
   | { type: 'SAVE_CONVERSATION_CATEGORY'; payload: ConversationCategory }
