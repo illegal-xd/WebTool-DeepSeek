@@ -207,9 +207,11 @@ entrypoints/
 └── sidepanel/            # 侧边栏 React 应用（记忆/技能/预设/对话/MCP/设置页面）
 ```
 
-## 友情链接
+## 分享链接
 
 - [LINUX DO](https://linux.do) — 新一代开源技术社区
+- [System Prompts Leaks](https://github.com/asgeirtj/system_prompts_leaks) - 开源的系统提示词合集库
+- [通往 AGI 之路](https://www.waytoagi.com/zh/prompts) - WayToAGI社区 资源整合知识库
 
 ## License
 
