@@ -3,7 +3,8 @@ import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
 import { updatePresetTag } from '../core/ui/preset-tag';
-import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord } from '../core/types';
+import { DEFAULT_RECOGNIZED_TOOL_TAGS } from '../core/tool';
+import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
 export default defineContentScript({
   matches: ['*://chat.deepseek.com/*'],
@@ -81,18 +82,32 @@ export default defineContentScript({
 
       switch (event.data.type) {
         case 'SYNC_STATE': {
-          const { memories, skills, presets, activePreset, modelType } = event.data as {
+          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags } = event.data as {
             memories: Memory[];
             skills: Skill[];
             presets: SystemPromptPreset[];
             activePreset: SystemPromptPreset | null;
             modelType: ModelType;
+            toolDescriptors?: ToolDescriptor[];
+            recognizedToolTags?: string[];
           };
-          updateHookState({ memories, skills, activePreset, modelType });
+          updateHookState({
+            memories,
+            skills,
+            activePreset,
+            modelType,
+            toolDescriptors: toolDescriptors ?? [],
+            recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS],
+          });
           initSkillPopup(skills);
           initMemoryPopup(memories);
           initPresetPopup(presets);
           updatePresetTag(activePreset);
+          break;
+        }
+        case 'SYNC_TOOL_DESCRIPTORS': {
+          const { toolDescriptors, recognizedToolTags } = event.data as { toolDescriptors?: ToolDescriptor[]; recognizedToolTags?: string[] };
+          updateHookState({ toolDescriptors: toolDescriptors ?? [], recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS] });
           break;
         }
       }

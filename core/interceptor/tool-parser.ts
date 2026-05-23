@@ -1,21 +1,25 @@
 import { TOOL_CALLS_BLOCK_REGEX, INVOKE_REGEX, PARAMETER_REGEX, TOOL_CALL_REGEX } from '../constants';
+import { createToolCallFromInvocation, createToolInvocationCatalog, createXmlToolCallRegex, DEFAULT_TOOL_DESCRIPTORS, type ToolParsingInput } from '../tool';
 import type { ToolCall } from '../types';
 
-function extractXmlToolCalls(text: string): ToolCall[] {
+function extractXmlToolCalls(text: string, options?: ToolParsingInput): ToolCall[] {
   const calls: ToolCall[] = [];
-  const regex = new RegExp(TOOL_CALL_REGEX.source, 'g');
-  let match: RegExpExecArray | null;
+  const catalog = createToolInvocationCatalog(options?.descriptors ?? DEFAULT_TOOL_DESCRIPTORS, options?.recognizedTags);
+  const regex = createXmlToolCallRegex(catalog);
+  let match: RegExpExecArray | null = regex.exec(text);
 
-  while ((match = regex.exec(text)) !== null) {
-    const name = match[1];
+  while (match !== null) {
+    const invocationName = match[1];
     const jsonStr = match[2];
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse(jsonStr);
     } catch {
+      match = regex.exec(text);
       continue;
     }
-    calls.push({ name, payload, raw: match[0] });
+    calls.push(createToolCallFromInvocation(invocationName, payload, match[0], catalog));
+    match = regex.exec(text);
   }
 
   return calls;
@@ -24,21 +28,21 @@ function extractXmlToolCalls(text: string): ToolCall[] {
 function extractLegacyToolCalls(text: string): ToolCall[] {
   const calls: ToolCall[] = [];
   const blockRegex = new RegExp(TOOL_CALLS_BLOCK_REGEX.source, 'g');
-  let blockMatch: RegExpExecArray | null;
+  let blockMatch: RegExpExecArray | null = blockRegex.exec(text);
 
-  while ((blockMatch = blockRegex.exec(text)) !== null) {
+  while (blockMatch !== null) {
     const blockContent = blockMatch[0];
     const invokeRegex = new RegExp(INVOKE_REGEX.source, 'g');
-    let invokeMatch: RegExpExecArray | null;
+    let invokeMatch: RegExpExecArray | null = invokeRegex.exec(blockContent);
 
-    while ((invokeMatch = invokeRegex.exec(blockContent)) !== null) {
+    while (invokeMatch !== null) {
       const name = invokeMatch[1];
       const invokeContent = invokeMatch[2];
       const payload: Record<string, unknown> = {};
       const paramRegex = new RegExp(PARAMETER_REGEX.source, 'g');
-      let paramMatch: RegExpExecArray | null;
+      let paramMatch: RegExpExecArray | null = paramRegex.exec(invokeContent);
 
-      while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
+      while (paramMatch !== null) {
         const paramName = paramMatch[1];
         const isString = paramMatch[2] === 'true';
         const value = paramMatch[3];
@@ -51,26 +55,29 @@ function extractLegacyToolCalls(text: string): ToolCall[] {
             payload[paramName] = value;
           }
         }
+        paramMatch = paramRegex.exec(invokeContent);
       }
 
       calls.push({ name, payload, raw: blockMatch[0] });
+      invokeMatch = invokeRegex.exec(blockContent);
     }
+    blockMatch = blockRegex.exec(text);
   }
 
   return calls;
 }
 
-export function extractToolCalls(text: string): ToolCall[] {
+export function extractToolCalls(text: string, options?: ToolParsingInput): ToolCall[] {
   return [
-    ...extractXmlToolCalls(text),
+    ...extractXmlToolCalls(text, options),
     ...extractLegacyToolCalls(text),
   ];
 }
 
-export function stripToolCalls(text: string): string {
+export function stripToolCalls(text: string, options?: ToolParsingInput): string {
   // Strip both legacy DSML blocks and new XML blocks
   let result = text.replace(new RegExp(TOOL_CALLS_BLOCK_REGEX.source, 'g'), '');
-  result = result.replace(new RegExp(TOOL_CALL_REGEX.source, 'g'), '');
+  result = result.replace(createXmlToolCallRegex(createToolInvocationCatalog(options?.descriptors ?? DEFAULT_TOOL_DESCRIPTORS, options?.recognizedTags)), '');
   return result.trim();
 }
 

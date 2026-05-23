@@ -2,7 +2,7 @@
   "name": "webtool-deepseek",
   "description": "Agentic memory & skill system for DeepSeek",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",

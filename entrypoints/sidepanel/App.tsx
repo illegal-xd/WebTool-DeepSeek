@@ -3,15 +3,17 @@ import MemoryPage from './pages/MemoryPage';
 import SkillPage from './pages/SkillPage';
 import PresetPage from './pages/PresetPage';
 import ConversationPage from './pages/ConversationPage';
+import McpPage from './pages/McpPage';
 import SettingsPage from './pages/SettingsPage';
 
-type Tab = 'memory' | 'skill' | 'preset' | 'conversation' | 'settings';
+type Tab = 'memory' | 'skill' | 'preset' | 'conversation' | 'mcp' | 'settings';
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'memory', label: '记忆', icon: 'M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z' },
   { key: 'skill', label: 'Skill', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
   { key: 'preset', label: '预设', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
   { key: 'conversation', label: '对话', icon: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z' },
+  { key: 'mcp', label: 'MCP', icon: 'M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z' },
   { key: 'settings', label: '设置', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z' },
 ];
 
@@ -37,7 +39,7 @@ export default function App() {
           </h1>
         </div>
         <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ color: 'var(--ds-text-tertiary)', background: 'var(--ds-surface)' }}>
-          v0.4.0
+          v0.5.0
         </span>
       </header>
 
@@ -83,6 +85,7 @@ export default function App() {
         {tab === 'skill' && <SkillPage />}
         {tab === 'preset' && <PresetPage />}
         {tab === 'conversation' && <ConversationPage key={conversationRefreshKey} />}
+        {tab === 'mcp' && <McpPage />}
         {tab === 'settings' && <SettingsPage />}
       </main>
     </div>

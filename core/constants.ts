@@ -26,11 +26,7 @@ You have access to a set of tools to help answer the user's question. You can in
 
 ### Available Tool Schemas
 
-${MEMORY_SAVE_SCHEMA}
-
-${MEMORY_UPDATE_SCHEMA}
-
-${MEMORY_DELETE_SCHEMA}
+{{tools}}
 
 You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.
 
@@ -73,11 +69,7 @@ You MUST output your complete reasoning inside  thinking... response BEFORE any 
 
 ### Available Tool Schemas
 
-${MEMORY_SAVE_SCHEMA}
-
-${MEMORY_UPDATE_SCHEMA}
-
-${MEMORY_DELETE_SCHEMA}
+{{tools}}
 
 You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.
 

@@ -1,0 +1,112 @@
+export type JsonPrimitive = string | number | boolean | null;
+
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+export type ToolPayload = Record<string, unknown>;
+
+export type ToolProviderKind = 'local' | 'mcp';
+
+export type ToolProviderId = string;
+
+export type ToolDescriptorId = string;
+
+export type ToolCallId = string;
+
+export type ToolExecutionTrigger = 'manual_chat' | 'test';
+
+export type ToolExecutionMode = 'auto' | 'manual' | 'disabled';
+
+export type ToolRiskLevel = 'low' | 'medium' | 'high';
+
+export type ToolTransportKind =
+  | 'in_process'
+  | 'http'
+  | 'sse'
+  | 'streamable_http'
+  | 'stdio_bridge'
+  | 'native_messaging';
+
+export interface ToolProviderIdentity {
+  kind: ToolProviderKind;
+  id: ToolProviderId;
+  displayName: string;
+  transport: ToolTransportKind;
+}
+
+export interface ToolDescriptorSchema {
+  type: 'object';
+  properties?: Record<string, JsonValue>;
+  required?: string[];
+  additionalProperties?: boolean;
+  description?: string;
+}
+
+export interface ToolDescriptorExecution {
+  mode: ToolExecutionMode;
+  enabled: boolean;
+  risk: ToolRiskLevel;
+  timeoutMs?: number;
+  maxResultBytes?: number;
+}
+
+export interface ToolDescriptor {
+  id: ToolDescriptorId;
+  provider: ToolProviderIdentity;
+  name: string;
+  invocationName: string;
+  title: string;
+  description: string;
+  inputSchema: ToolDescriptorSchema;
+  outputSchema?: ToolDescriptorSchema;
+  execution: ToolDescriptorExecution;
+  annotations?: Record<string, string>;
+}
+
+export interface ToolCallSource {
+  trigger: ToolExecutionTrigger;
+  chatSessionId?: string | null;
+  messageId?: string | number | null;
+}
+
+export interface ToolCall {
+  id?: ToolCallId;
+  descriptorId?: ToolDescriptorId;
+  provider?: ToolProviderIdentity;
+  name: string;
+  invocationName?: string;
+  payload: ToolPayload;
+  raw: string;
+  source?: ToolCallSource;
+  createdAt?: number;
+}
+
+export interface ToolError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details?: ToolPayload;
+}
+
+export interface ToolResult {
+  ok: boolean;
+  summary: string;
+  detail?: string;
+  callId?: ToolCallId;
+  descriptorId?: ToolDescriptorId;
+  provider?: ToolProviderIdentity;
+  name?: string;
+  output?: JsonValue;
+  error?: ToolError;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  truncated?: boolean;
+}
+
+export interface ToolCallHistoryRecord {
+  id: string;
+  call: ToolCall;
+  result: ToolResult;
+  createdAt: number;
+  source: ToolExecutionTrigger;
+}

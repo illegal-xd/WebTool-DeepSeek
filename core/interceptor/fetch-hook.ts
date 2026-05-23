@@ -1,9 +1,10 @@
 import { DEEPSEEK_API_URL } from '../constants';
-import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill } from '../types';
+import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, getToolCloseTag, getToolOpenTag, hasXmlToolMarker } from '../tool';
+import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill, ToolDescriptor } from '../types';
 import { buildAugmentedPrompt } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
-import { extractToolCalls } from './tool-parser';
+import { extractToolCalls, stripToolCalls } from './tool-parser';
 
 const API_PATH = new URL(DEEPSEEK_API_URL).pathname;
 const HISTORY_PATH = '/api/v0/chat/history_messages';
@@ -13,6 +14,8 @@ interface HookState {
   skills: Skill[];
   activePreset: SystemPromptPreset | null;
   modelType: ModelType;
+  toolDescriptors: ToolDescriptor[];
+  recognizedToolTags: string[];
   _lastChatSessionId: string | null;
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
@@ -27,6 +30,8 @@ let hookState: HookState = {
   skills: [],
   activePreset: null,
   modelType: null,
+  toolDescriptors: [],
+  recognizedToolTags: [...DEFAULT_RECOGNIZED_TOOL_TAGS],
   _lastChatSessionId: null,
   onToolCall: () => {},
   onResponseComplete: () => {},
@@ -42,9 +47,6 @@ interface ToolStreamFilterState {
   insideToolBlock: boolean;
   sseRemainder: string;
 }
-
-const TOOL_OPEN_TAG_REGEX = /<(memory_save|memory_update|memory_delete)>/g;
-const TOOL_END_TAG_REGEX = /<\/(memory_save|memory_update|memory_delete)>/g;
 
 export function updateHookState(partial: Partial<HookState>) {
   hookState = { ...hookState, ...partial };
@@ -159,7 +161,7 @@ function modifyRequestBody(bodyStr: string): string | null {
       const targetMemories = resolveTargetMemories(memorySources);
 
       if (targetMemories.length > 0) {
-        const { augmented } = buildAugmentedPrompt(prompt, targetMemories, { thinkingEnabled });
+        const { augmented } = buildAugmentedPrompt(prompt, targetMemories, { thinkingEnabled, toolDescriptors: hookState.toolDescriptors });
         prompt = augmented;
       }
 
@@ -187,6 +189,7 @@ function modifyRequestBody(bodyStr: string): string | null {
   const { augmented, usedMemoryIds } = buildAugmentedPrompt(originalPrompt, targetMemories, {
     thinkingEnabled,
     identityOnly,
+    toolDescriptors: hookState.toolDescriptors,
   });
   body.prompt = presetPrefix + augmented;
 
@@ -312,7 +315,7 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
 // in SSE stream chunks and handles chunk-boundary truncation.
 
 function notifyNewToolCalls(fullText: string, alreadyNotified: number): number {
-  const calls = extractToolCalls(fullText);
+  const calls = extractToolCalls(fullText, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
   for (let i = alreadyNotified; i < calls.length; i++) {
     hookState.onToolCall(calls[i]);
   }
@@ -320,7 +323,7 @@ function notifyNewToolCalls(fullText: string, alreadyNotified: number): number {
 }
 
 async function executeToolCalls(fullText: string): Promise<void> {
-  const calls = extractToolCalls(fullText);
+  const calls = extractToolCalls(fullText, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
   for (const call of calls) {
     await hookState.onToolCallExecuted(call);
   }
@@ -416,32 +419,56 @@ function filterToolMarkupFromText(text: string, state: ToolStreamFilterState): {
 
   while (cursor < text.length) {
     if (state.insideToolBlock) {
-      TOOL_END_TAG_REGEX.lastIndex = cursor;
-      const endMatch = TOOL_END_TAG_REGEX.exec(text);
-      if (!endMatch) {
+      const endIndex = findNextToolCloseIndex(text, cursor);
+      if (endIndex === -1) {
         changed = true;
         break;
       }
-      cursor = endMatch.index + endMatch[0].length;
+      cursor = endIndex;
       state.insideToolBlock = false;
       changed = true;
       continue;
     }
 
-    TOOL_OPEN_TAG_REGEX.lastIndex = cursor;
-    const openMatch = TOOL_OPEN_TAG_REGEX.exec(text);
+    const openMatch = findNextToolOpen(text, cursor);
     if (!openMatch) {
       output += text.slice(cursor);
       break;
     }
 
     output += text.slice(cursor, openMatch.index);
-    cursor = openMatch.index + openMatch[0].length;
+    cursor = openMatch.index + openMatch.tag.length;
     state.insideToolBlock = true;
     changed = true;
   }
 
   return { text: output, changed };
+}
+
+function findNextToolOpen(text: string, cursor: number): { index: number; tag: string } | null {
+  const catalog = createToolInvocationCatalog(hookState.toolDescriptors, hookState.recognizedToolTags);
+  let best: { index: number; tag: string } | null = null;
+  for (const name of catalog.invocationNames) {
+    const tag = getToolOpenTag(name);
+    const index = text.indexOf(tag, cursor);
+    if (index !== -1 && (!best || index < best.index)) best = { index, tag };
+  }
+  return best;
+}
+
+function findNextToolCloseIndex(text: string, cursor: number): number {
+  const catalog = createToolInvocationCatalog(hookState.toolDescriptors, hookState.recognizedToolTags);
+  let best = -1;
+  let bestLength = 0;
+  for (const name of catalog.invocationNames) {
+    const tag = getToolCloseTag(name);
+    const index = text.indexOf(tag, cursor);
+    if (index !== -1 && (best === -1 || index < best)) {
+      best = index;
+      bestLength = tag.length;
+    }
+  }
+  return best === -1 ? -1 : best + bestLength;
 }
 
 async function interceptFetchResponse(responsePromise: Promise<Response>): Promise<Response> {
@@ -631,14 +658,14 @@ function stripToolCallsFromHistory(json: any): { cleaned: any; records: ToolCall
     cleaned.chat_messages = cleaned.chat_messages.map((msg: any) => {
       if (!msg || msg.role !== 'assistant') return msg;
 
-      const toolCalls = extractToolCalls(msg.content || '');
+      const toolCalls = extractToolCalls(msg.content || '', { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
       if (toolCalls.length === 0) return msg;
 
-      const cleanContent = (msg.content || '').replace(/<memory_save>[\s\S]*?<\/memory_save>/g, '').trim();
+      const cleanContent = stripToolCalls(msg.content || '', { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
       const cleanFragments = msg.fragments
         ? msg.fragments.map((f: any) => ({
             ...f,
-            content: (f.content || '').replace(/<memory_save>[\s\S]*?<\/memory_save>/g, '').trim(),
+        content: stripToolCalls(f.content || '', { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags }),
           }))
         : msg.fragments;
 
@@ -720,10 +747,10 @@ function cleanHistoryResult(item: any): any {
   if (item.role !== 'assistant') return item;
 
   const content = item.content || '';
-  if (!content.includes('<memory_save') && !content.includes('<dpp')) return item;
+  if (!hasXmlToolMarker(content, createToolInvocationCatalog(hookState.toolDescriptors, hookState.recognizedToolTags)) && !content.includes('<dpp')) return item;
 
   const cleanContent = content
-    .replace(/<memory_save>[\s\S]*?<\/memory_save>/g, '')
+    .replace(createDynamicToolRegex(), '')
     .replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, '')
     .trim();
 
@@ -731,6 +758,13 @@ function cleanHistoryResult(item: any): any {
     ...item,
     content: cleanContent,
   };
+}
+
+function createDynamicToolRegex(): RegExp {
+  const catalog = createToolInvocationCatalog(hookState.toolDescriptors, hookState.recognizedToolTags);
+  if (catalog.invocationNames.length === 0) return /$a/g;
+  const names = catalog.invocationNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  return new RegExp(`<(${names})>\\s*[\\s\\S]*?\\s*<\\/\\1>`, 'g');
 }
 
 // ─── Memory Command Parsing ────────────────────────────────────────

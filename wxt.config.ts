@@ -7,13 +7,22 @@ export default defineConfig({
   manifest: {
     name: 'WebTool-DeepSeek',
     description: 'Agentic memory & skill system for DeepSeek',
-    version: '0.4.0',
-    permissions: ['sidePanel', 'storage'],
-    optional_host_permissions: ['http://*/*', 'https://*/*'],
+    version: '0.5.0',
+    permissions: ['sidePanel', 'storage', 'nativeMessaging'],
+    optional_host_permissions: [
+      'http://127.0.0.1/*',
+      'http://localhost/*',
+      'http://*/*',
+      'https://*/*',
+    ],
     side_panel: {
       default_path: 'sidepanel.html',
     },
-    host_permissions: ['*://chat.deepseek.com/*'],
+    host_permissions: [
+      '*://chat.deepseek.com/*',
+      'http://127.0.0.1/*',
+      'http://localhost/*',
+    ],
   },
   vite: () => ({
     plugins: [tailwindcss()],

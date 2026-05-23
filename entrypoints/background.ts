@@ -24,6 +24,19 @@ import { getSyncConfig, saveSyncConfig } from '../core/sync/config';
 import { webdavTest, webdavMkcol, webdavGet, webdavPut } from '../core/sync/webdav-client';
 import { mergeMemories, mergeSkills, mergePresets } from '../core/sync/merge';
 import {
+  createMcpServer,
+  deleteMcpServer,
+  getAllMcpServers,
+  getMcpServerById,
+  getMcpToolCache,
+  updateMcpServer,
+} from '../core/mcp/store';
+import { refreshMcpServerDiscovery } from '../core/mcp/discovery';
+import { getMcpOriginPattern, requestMcpServerOriginPermission } from '../core/mcp/transports';
+import { clearToolCallHistory, getToolCallHistory } from '../core/tool/history';
+import { isMemoryToolName } from '../core/tool/memory';
+import { executeRuntimeToolCall, getRuntimeToolDescriptors, refreshRuntimeToolDescriptors } from '../core/tool/runtime';
+import {
   assignSessionsToCategory,
   attachCategoryIds,
   deleteConversationCategory,
@@ -31,7 +44,7 @@ import {
   saveConversationCategory,
   unassignSessionsFromCategory,
 } from '../core/conversation/store';
-import type { BackgroundConfig, ConversationCategory, ConversationMessage, ConversationSession, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset } from '../core/types';
+import type { BackgroundConfig, ConversationCategory, ConversationMessage, ConversationSession, McpServerCreateInput, McpServerUpdateInput, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset, ToolCall } from '../core/types';
 
 const NEW_CHAT_URL = 'https://chat.deepseek.com/a/chat';
 
@@ -150,8 +163,105 @@ async function handleMessage(
     case 'GET_ACTIVE_PRESET':
       return getActivePreset();
 
+    case 'GET_MCP_SERVERS':
+      return getAllMcpServers();
+
+    case 'GET_MCP_SERVER': {
+      const { id } = message.payload as { id: string };
+      return getMcpServerById(id);
+    }
+
+    case 'CREATE_MCP_SERVER': {
+      const server = await createMcpServer(message.payload as McpServerCreateInput);
+      await broadcastMcpServersUpdate(sender.tab?.id);
+      await broadcastToolDescriptorsUpdate(sender.tab?.id);
+      return server;
+    }
+
+    case 'UPDATE_MCP_SERVER': {
+      const { id, patch } = message.payload as { id: string; patch: McpServerUpdateInput };
+      const server = await updateMcpServer(id, patch);
+      await broadcastMcpServersUpdate(sender.tab?.id);
+      await broadcastToolDescriptorsUpdate(sender.tab?.id);
+      return server;
+    }
+
+    case 'DELETE_MCP_SERVER': {
+      const { id } = message.payload as { id: string };
+      await deleteMcpServer(id);
+      await broadcastMcpServersUpdate(sender.tab?.id);
+      await broadcastToolDescriptorsUpdate(sender.tab?.id);
+      return { ok: true };
+    }
+
+    case 'GET_MCP_TOOL_CACHE': {
+      const { serverId } = message.payload as { serverId: string };
+      return getMcpToolCache(serverId);
+    }
+
+    case 'REFRESH_MCP_SERVER_TOOLS': {
+      const { serverId } = message.payload as { serverId: string };
+      const cache = await refreshMcpServerDiscovery(serverId);
+      await broadcastMcpServersUpdate(sender.tab?.id);
+      await broadcastToolDescriptorsUpdate(sender.tab?.id);
+      return cache;
+    }
+
+    case 'REQUEST_MCP_SERVER_PERMISSION': {
+      const { serverId } = message.payload as { serverId: string };
+      const server = await getMcpServerById(serverId);
+      if (!server) return { ok: false, error: 'mcp_server_not_found' };
+      if (server.transport.kind === 'native_messaging') return { ok: true, origin: null };
+      try {
+        const origin = getMcpOriginPattern(server);
+        const ok = await requestMcpServerOriginPermission(server);
+        return { ok, origin };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    case 'TEST_MCP_SERVER_CONNECTION': {
+      const { serverId } = message.payload as { serverId: string };
+      const cache = await refreshMcpServerDiscovery(serverId);
+      await broadcastMcpServersUpdate(sender.tab?.id);
+      await broadcastToolDescriptorsUpdate(sender.tab?.id);
+      return { ok: cache.health.status === 'ready', cache, health: cache.health };
+    }
+
+    case 'GET_TOOL_DESCRIPTORS':
+      return getRuntimeToolDescriptors();
+
+    case 'REFRESH_TOOL_DESCRIPTORS': {
+      const tools = await refreshRuntimeToolDescriptors();
+      await broadcastToolDescriptorsUpdate(sender.tab?.id);
+      await broadcastMcpServersUpdate(sender.tab?.id);
+      return tools;
+    }
+
+    case 'EXECUTE_TOOL_CALL': {
+      const call = message.payload as ToolCall;
+      const result = await executeRuntimeToolCall(call, 'manual_chat');
+      if (isMemoryToolName(call.name)) {
+        await broadcastStateUpdate(sender.tab?.id);
+      }
+      await broadcastToolCallHistoryUpdate(sender.tab?.id);
+      return result;
+    }
+
+    case 'GET_TOOL_CALL_HISTORY': {
+      const { limit } = (message.payload as { limit?: number } | undefined) ?? {};
+      return getToolCallHistory(limit);
+    }
+
+    case 'CLEAR_TOOL_CALL_HISTORY': {
+      await clearToolCallHistory();
+      await broadcastToolCallHistoryUpdate(sender.tab?.id);
+      return { ok: true };
+    }
+
     case 'GET_CONFIG':
-      return { version: '0.4.0' };
+      return { version: '0.5.0' };
 
     case 'GET_MODEL_TYPE':
       return getModelType();
@@ -356,14 +466,15 @@ async function broadcastToTabs(payload: Record<string, unknown>, excludeTabId?: 
 }
 
 async function broadcastStateUpdate(excludeTabId?: number) {
-  const [memories, skills, presets, activePreset, modelType] = await Promise.all([
+  const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
     getAllMemories(),
     getAllSkills(),
     getAllPresets(),
     getActivePreset(),
     getModelType(),
+    getRuntimeToolDescriptors(),
   ]);
-  const payload = { type: 'STATE_UPDATED', memories, skills, presets, activePreset, modelType };
+  const payload = { type: 'STATE_UPDATED', memories, skills, presets, activePreset, modelType, toolDescriptors };
   await broadcastToTabs(payload, excludeTabId);
   // Also notify extension pages (sidepanel, popup) via runtime messaging
   chrome.runtime.sendMessage(payload).catch(() => {});
@@ -371,4 +482,18 @@ async function broadcastStateUpdate(excludeTabId?: number) {
 
 async function broadcastBackgroundUpdate(config: BackgroundConfig | null) {
   await broadcastToTabs({ type: 'BACKGROUND_UPDATED', config });
+}
+
+async function broadcastMcpServersUpdate(excludeTabId?: number) {
+  const servers = await getAllMcpServers();
+  await broadcastToTabs({ type: 'MCP_SERVERS_UPDATED', servers }, excludeTabId);
+}
+
+async function broadcastToolDescriptorsUpdate(excludeTabId?: number) {
+  const toolDescriptors = await getRuntimeToolDescriptors();
+  await broadcastToTabs({ type: 'TOOL_DESCRIPTORS_UPDATED', toolDescriptors }, excludeTabId);
+}
+
+async function broadcastToolCallHistoryUpdate(excludeTabId?: number) {
+  await broadcastToTabs({ type: 'TOOL_CALL_HISTORY_UPDATED' }, excludeTabId);
 }

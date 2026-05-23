@@ -1,3 +1,44 @@
+import type { McpServerCreateInput, McpServerId, McpServerUpdateInput } from './mcp/types';
+import type { ToolCall as GenericToolCall, ToolPayload, ToolProviderIdentity, ToolResult as GenericToolResult } from './tool/types';
+
+export type {
+  McpHeaderValue,
+  McpSecretValue,
+  McpServerConfig,
+  McpServerCreateInput,
+  McpServerExecutionDefaults,
+  McpServerId,
+  McpServerResultLimits,
+  McpServerStatus,
+  McpServerTimeouts,
+  McpServerTransportConfig,
+  McpServerUpdateInput,
+  McpToolAllowlist,
+  McpToolCacheEntry,
+} from './mcp/types';
+
+export type {
+  JsonPrimitive,
+  JsonValue,
+  ToolCallHistoryRecord,
+  ToolCallId,
+  ToolCallSource,
+  ToolDescriptor,
+  ToolDescriptorExecution,
+  ToolDescriptorId,
+  ToolDescriptorSchema,
+  ToolError,
+  ToolExecutionMode,
+  ToolExecutionTrigger,
+  ToolPayload,
+  ToolProviderId,
+  ToolProviderIdentity,
+  ToolProviderKind,
+  ToolResult,
+  ToolRiskLevel,
+  ToolTransportKind,
+} from './tool/types';
+
 export type MemoryType = 'user' | 'feedback' | 'topic' | 'reference';
 export type MemoryScope = 'permanent' | 'contextual' | 'temporary';
 
@@ -62,21 +103,15 @@ export interface SkillInvocation {
   rawInput: string;
 }
 
-export interface ToolCall {
-  name: string;
-  payload: Record<string, unknown>;
-  raw: string;
-}
+export interface ToolCall extends GenericToolCall {}
 
-export interface ToolCardResult {
-  ok: boolean;
-  summary: string;
-  detail?: string;
-}
+export interface ToolCardResult extends Pick<GenericToolResult, 'ok' | 'summary' | 'detail' | 'output' | 'truncated' | 'error'> {}
 
 export interface ToolExecutionRecord {
   name: string;
   result: ToolCardResult;
+  provider?: ToolProviderIdentity;
+  descriptorId?: string;
 }
 
 export interface ToolCallRestoreRecord {
@@ -87,6 +122,7 @@ export interface ToolCallRestoreRecord {
   source: string;
   url: string;
   timestamp: number;
+  metadata?: ToolPayload;
 }
 
 export type NewMemory = {
@@ -179,6 +215,20 @@ export type MessageAction =
   | { type: 'SET_MODEL_TYPE'; payload: ModelType }
   | { type: 'TOUCH_USAGE'; payload: { kind: 'memory'; id: number } | { kind: 'skill'; name: string } | { kind: 'preset'; id: string } }
   | { type: 'TOOL_CALL_EXECUTED'; payload: ToolCall }
+  | { type: 'GET_MCP_SERVERS' }
+  | { type: 'GET_MCP_SERVER'; payload: { id: McpServerId } }
+  | { type: 'CREATE_MCP_SERVER'; payload: McpServerCreateInput }
+  | { type: 'UPDATE_MCP_SERVER'; payload: { id: McpServerId; patch: McpServerUpdateInput } }
+  | { type: 'DELETE_MCP_SERVER'; payload: { id: McpServerId } }
+  | { type: 'GET_MCP_TOOL_CACHE'; payload: { serverId: McpServerId } }
+  | { type: 'REFRESH_MCP_SERVER_TOOLS'; payload: { serverId: McpServerId } }
+  | { type: 'REQUEST_MCP_SERVER_PERMISSION'; payload: { serverId: McpServerId } }
+  | { type: 'TEST_MCP_SERVER_CONNECTION'; payload: { serverId: McpServerId } }
+  | { type: 'GET_TOOL_DESCRIPTORS' }
+  | { type: 'REFRESH_TOOL_DESCRIPTORS' }
+  | { type: 'EXECUTE_TOOL_CALL'; payload: ToolCall }
+  | { type: 'GET_TOOL_CALL_HISTORY'; payload?: { limit?: number } }
+  | { type: 'CLEAR_TOOL_CALL_HISTORY' }
   | { type: 'MEMORIES_UPDATED' }
   | { type: 'WEBDAV_TEST'; payload: Omit<SyncConfig, 'lastSyncAt'> }
   | { type: 'WEBDAV_SYNC' }

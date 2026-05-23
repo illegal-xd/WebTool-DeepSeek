@@ -4,14 +4,16 @@ import {
   listDeepSeekSessions,
   renameDeepSeekSession,
 } from '../core/conversation/api';
-import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord } from '../core/types';
+import { DEFAULT_RECOGNIZED_TOOL_TAGS } from '../core/tool';
+import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
 const BLOCK_CLASS = 'dpp-tool-block';
 const BLOCK_STYLE_ID = 'dpp-tool-block-css';
 const STORAGE_PREFIX = 'dpp_tool_exec_';
-const TOOL_OPEN_TAG_REGEX = /<(memory_save|memory_update|memory_delete)>/;
-const TOOL_COMPLETE_BLOCK_REGEX = /<(memory_save|memory_update|memory_delete)>[\s\S]*?<\/\1>/g;
-const TOOL_END_TAG_REGEX = /<\/(memory_save|memory_update|memory_delete)>/;
+const RECOGNIZED_TOOL_TAGS = [...DEFAULT_RECOGNIZED_TOOL_TAGS];
+const TOOL_OPEN_TAG_REGEX = createRecognizedToolTagRegex('open');
+const TOOL_COMPLETE_BLOCK_REGEX = createRecognizedToolTagRegex('complete');
+const TOOL_END_TAG_REGEX = createRecognizedToolTagRegex('close');
 
 interface DomToolCleanupState {
   insideToolBlock: boolean;
@@ -47,15 +49,16 @@ export default defineContentScript({
       else document.addEventListener('DOMContentLoaded', () => r(undefined), { once: true });
     });
 
-    const [memories, skills, presets, activePreset, modelType] = await Promise.all([
+    const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
       chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }),
       chrome.runtime.sendMessage({ type: 'GET_SKILLS' }),
       chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
       chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
       chrome.runtime.sendMessage({ type: 'GET_MODEL_TYPE' }),
+      chrome.runtime.sendMessage({ type: 'GET_TOOL_DESCRIPTORS' }),
     ]);
 
-    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType);
+    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, toolDescriptors ?? []);
     restorePersistedToolBlocks();
 
     window.addEventListener('message', async (event) => {
@@ -69,22 +72,22 @@ export default defineContentScript({
           break;
         }
         case 'EXECUTE_TOOL_CALL': {
-	          const call = event.data.data as ToolCall;
-	          // Execute if not already resolved by TOOL_CALL handler during streaming
-	          if (!resolvedCallRaws.has(call.raw)) {
-	            const result = await executeToolCall(call);
-	            resolvedCallRaws.add(call.raw);
-	          }
-	          window.postMessage({
-	            source: 'WebTool-DeepSeek-content',
-	            type: 'TOOL_CALL_RESULT',
-	            data: { ok: true, summary: call.name },
-	            callName: call.name,
-	          });
-	          break;
-	        }
+          const call = event.data.data as ToolCall;
+          let result: ToolCardResult = { ok: true, summary: call.name };
+          if (!resolvedCallRaws.has(call.raw)) {
+            result = await executeToolCall(call);
+            resolvedCallRaws.add(call.raw);
+          }
+          window.postMessage({
+            source: 'WebTool-DeepSeek-content',
+            type: 'TOOL_CALL_RESULT',
+            data: result,
+            callName: call.name,
+          });
+          break;
+        }
 
-	        case 'MEMORIES_USED': {
+        case 'MEMORIES_USED': {
           const ids = event.data.ids as number[];
           await chrome.runtime.sendMessage({ type: 'TOUCH_MEMORIES', payload: { ids } });
           break;
@@ -106,14 +109,15 @@ export default defineContentScript({
         case 'SET_ACTIVE_PRESET': {
           const id = event.data.id as string | null;
           await chrome.runtime.sendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
-          const [memories, skills, presets, activePreset, modelType] = await Promise.all([
+          const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
             chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }),
             chrome.runtime.sendMessage({ type: 'GET_SKILLS' }),
             chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
             chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
             chrome.runtime.sendMessage({ type: 'GET_MODEL_TYPE' }),
+            chrome.runtime.sendMessage({ type: 'GET_TOOL_DESCRIPTORS' }),
           ]);
-          syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType);
+          syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, toolDescriptors ?? []);
           break;
         }
       }
@@ -125,7 +129,11 @@ export default defineContentScript({
 
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'STATE_UPDATED') {
-        syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType);
+        syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType, message.toolDescriptors ?? []);
+      } else if (message.type === 'TOOL_DESCRIPTORS_UPDATED') {
+        chrome.runtime.sendMessage({ type: 'GET_TOOL_DESCRIPTORS' }).then((descriptors: ToolDescriptor[]) => {
+          window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'SYNC_TOOL_DESCRIPTORS', toolDescriptors: descriptors ?? [] });
+        }).catch(() => {});
       } else if (message.type === 'BACKGROUND_UPDATED') {
         applyBackground(message.config as BackgroundConfig | null);
       }
@@ -173,6 +181,7 @@ function syncToMainWorld(
   presets: SystemPromptPreset[],
   activePreset: SystemPromptPreset | null,
   modelType: ModelType,
+  toolDescriptors: ToolDescriptor[],
 ) {
   window.postMessage({
     source: 'WebTool-DeepSeek-content',
@@ -182,6 +191,7 @@ function syncToMainWorld(
     presets,
     activePreset,
     modelType,
+    toolDescriptors,
   });
 }
 
@@ -460,66 +470,8 @@ async function handleToolCall(call: ToolCall, callId: number) {
 
 async function executeToolCall(call: ToolCall): Promise<ToolCardResult> {
   try {
-    if (call.name === 'memory_save') {
-      const payload = call.payload as {
-        type?: string;
-        name?: string;
-        content?: string;
-        tags?: string[];
-      };
-      await chrome.runtime.sendMessage({
-        type: 'SAVE_MEMORY',
-        payload: {
-          type: payload.type || 'topic',
-          name: payload.name || 'unnamed',
-          content: payload.content || '',
-          description: payload.name || '',
-          tags: payload.tags || [],
-          pinned: false,
-        },
-      });
-      const name = payload.name || 'unnamed';
-      return { ok: true, summary: '已保存', detail: `${name} · 已保存` };
-    }
-
-    if (call.name === 'memory_update') {
-      const payload = call.payload as {
-        id?: number;
-        type?: string;
-        name?: string;
-        content?: string;
-        tags?: string[];
-      };
-      const id = Number(payload.id);
-      if (!id) return { ok: false, summary: '更新失败', detail: '无效 ID' };
-      const existing = await chrome.runtime.sendMessage({ type: 'GET_MEMORY_BY_ID', payload: { id } });
-      if (!existing) return { ok: false, summary: '更新失败', detail: `ID ${id} 不存在` };
-      await chrome.runtime.sendMessage({
-        type: 'UPDATE_MEMORY',
-        payload: {
-          ...existing,
-          type: payload.type || existing.type,
-          name: payload.name || existing.name,
-          content: payload.content || existing.content,
-          description: payload.name || existing.description,
-          tags: payload.tags || existing.tags,
-        },
-      });
-      const name = payload.name || existing.name;
-      return { ok: true, summary: '已更新', detail: `${name} · 已更新` };
-    }
-
-    if (call.name === 'memory_delete') {
-      const payload = call.payload as { id?: number };
-      const id = Number(payload.id);
-      if (!id) return { ok: false, summary: '删除失败', detail: '无效 ID' };
-      const existing = await chrome.runtime.sendMessage({ type: 'GET_MEMORY_BY_ID', payload: { id } });
-      await chrome.runtime.sendMessage({ type: 'DELETE_MEMORY', payload: { id } });
-      const name = existing?.name || `#${id}`;
-      return { ok: true, summary: '已删除', detail: `${name} · 已删除` };
-    }
-
-    return { ok: true, summary: call.name, detail: call.name };
+    const result = await chrome.runtime.sendMessage({ type: 'EXECUTE_TOOL_CALL', payload: call }) as ToolCardResult | null;
+    return result ?? { ok: false, summary: '执行失败', detail: '后台未返回执行结果' };
   } catch (err) {
     return { ok: false, summary: '执行失败', detail: err instanceof Error ? err.message : String(err) };
   }
@@ -804,9 +756,7 @@ function setupDOMObserver() {
         const parent = mutation.target.parentElement;
         const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
         if (
-          text.includes('<memory_save') ||
-          text.includes('<memory_update') ||
-          text.includes('<memory_delete') ||
+          hasPotentialToolMarkup(text) ||
           (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
         ) {
           needsCleanup = true;
@@ -821,9 +771,7 @@ function setupDOMObserver() {
           const text = el.textContent || '';
           const assistantMessage = getAssistantMessageRoot(el);
           if (
-            text.includes('<memory_save') ||
-            text.includes('<memory_update') ||
-            text.includes('<memory_delete') ||
+            hasPotentialToolMarkup(text) ||
             (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
           ) {
             needsCleanup = true;
@@ -833,9 +781,7 @@ function setupDOMObserver() {
           const parent = node.parentElement;
           const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
           if (
-            text.includes('<memory_save') ||
-            text.includes('<memory_update') ||
-            text.includes('<memory_delete') ||
+            hasPotentialToolMarkup(text) ||
             (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
           ) {
             needsCleanup = true;
@@ -856,6 +802,22 @@ function setupDOMObserver() {
   });
 
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+
+function hasPotentialToolMarkup(text: string): boolean {
+  return RECOGNIZED_TOOL_TAGS.some((tag) => text.includes(`<${tag}>`) || text.includes(`</${tag}>`)) || /<｜DSML｜tool_calls>/.test(text);
+}
+
+function createRecognizedToolTagRegex(kind: 'open' | 'close' | 'complete'): RegExp {
+  const names = RECOGNIZED_TOOL_TAGS.map(escapeRegExp).join('|');
+  if (!names) return /$a/g;
+  if (kind === 'open') return new RegExp(`<(${names})>`);
+  if (kind === 'close') return new RegExp(`<\\/(${names})>`);
+  return new RegExp(`<(${names})>\\s*\\{[\\s\\S]*?\\}\\s*<\\/\\1>`, 'g');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ─── Background Image (unchanged from original) ───────────────────
