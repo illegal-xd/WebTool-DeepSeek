@@ -17,8 +17,14 @@ export async function getToolCallHistory(limit: number = MAX_HISTORY): Promise<T
   return raw.filter((item): item is ToolCallHistoryRecord => Boolean(item && typeof item === 'object')).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
 }
 
-export async function clearToolCallHistory(): Promise<void> {
-  await chrome.storage.local.remove(STORAGE_KEY);
+export async function clearToolCallHistory(serverId?: string): Promise<void> {
+  if (!serverId) {
+    await chrome.storage.local.remove(STORAGE_KEY);
+    return;
+  }
+  const history = await getToolCallHistory();
+  const filtered = history.filter((record) => !(record.call.provider?.kind === 'mcp' && record.call.provider.id === serverId));
+  await chrome.storage.local.set({ [STORAGE_KEY]: filtered });
 }
 
 function sanitizeCall(call: ToolCall): ToolCall {

@@ -4,16 +4,13 @@ import {
   listDeepSeekSessions,
   renameDeepSeekSession,
 } from '../core/conversation/api';
-import { DEFAULT_RECOGNIZED_TOOL_TAGS } from '../core/tool';
-import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
+import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, createXmlToolCallRegex } from '../core/tool';
+import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCallHistoryRecord, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
 const BLOCK_CLASS = 'dpp-tool-block';
 const BLOCK_STYLE_ID = 'dpp-tool-block-css';
 const STORAGE_PREFIX = 'dpp_tool_exec_';
 const RECOGNIZED_TOOL_TAGS = [...DEFAULT_RECOGNIZED_TOOL_TAGS];
-const TOOL_OPEN_TAG_REGEX = createRecognizedToolTagRegex('open');
-const TOOL_COMPLETE_BLOCK_REGEX = createRecognizedToolTagRegex('complete');
-const TOOL_END_TAG_REGEX = createRecognizedToolTagRegex('close');
 
 interface DomToolCleanupState {
   insideToolBlock: boolean;
@@ -21,9 +18,16 @@ interface DomToolCleanupState {
   visiblePrefix: string;
 }
 
+interface TextRemovalRange {
+  start: number;
+  end: number;
+  tagName: string | null;
+}
+
 let nextCallId = 0;
 let currentToolBlock: HTMLElement | null = null;
 const earlyPlaceholderNames: string[] = [];
+let currentToolDescriptors: ToolDescriptor[] = [];
 const assistantToolCleanupState = new WeakMap<Element, DomToolCleanupState>();
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
 const resolvedCallRaws = new Set<string>();
@@ -107,7 +111,8 @@ export default defineContentScript({
       safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
     ]);
 
-    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, toolDescriptors ?? []);
+    currentToolDescriptors = toolDescriptors ?? [];
+    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors);
     restorePersistedToolBlocks();
 
     window.addEventListener('message', async (event) => {
@@ -152,7 +157,8 @@ export default defineContentScript({
         }
         case 'RESTORE_TOOL_CALLS': {
           const records = event.data.records as ToolCallRestoreRecord[];
-          renderRestoredToolBlocks(records);
+          const hydratedRecords = await hydrateToolCallRestoreRecords(records);
+          renderRestoredToolBlocks(hydratedRecords);
           break;
         }
         case 'SET_ACTIVE_PRESET': {
@@ -166,7 +172,9 @@ export default defineContentScript({
             safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
             safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
           ]);
-          syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, toolDescriptors ?? []);
+          currentToolDescriptors = toolDescriptors ?? [];
+          syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors);
+          cleanRenderedToolCalls();
           break;
         }
       }
@@ -178,10 +186,14 @@ export default defineContentScript({
 
     safeRuntimeOnMessage((message) => {
       if (message.type === 'STATE_UPDATED') {
-        syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType, message.toolDescriptors ?? []);
+        currentToolDescriptors = message.toolDescriptors ?? [];
+        syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType, currentToolDescriptors);
+        cleanRenderedToolCalls();
       } else if (message.type === 'TOOL_DESCRIPTORS_UPDATED') {
         safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }).then((descriptors) => {
-          window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'SYNC_TOOL_DESCRIPTORS', toolDescriptors: descriptors ?? [] });
+          currentToolDescriptors = descriptors ?? [];
+          window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'SYNC_TOOL_DESCRIPTORS', toolDescriptors: currentToolDescriptors });
+          cleanRenderedToolCalls();
         });
       } else if (message.type === 'BACKGROUND_UPDATED') {
         applyBackground(message.config as BackgroundConfig | null);
@@ -402,17 +414,18 @@ function addExecutingToolItem(block: HTMLElement, call: ToolCall) {
 	}
 
 function renderEarlyToolPlaceholder(name: string) {
-  if (earlyPlaceholderNames.includes(name)) return;
+  const displayName = getToolDisplayName(name);
+  if (earlyPlaceholderNames.includes(displayName)) return;
 
   if (currentToolBlock && document.contains(currentToolBlock)) {
-    addExecutingToolItem(currentToolBlock, { name, payload: {}, raw: '' });
-    earlyPlaceholderNames.push(name);
+    addExecutingToolItem(currentToolBlock, { name: displayName, invocationName: name, payload: {}, raw: '' });
+    earlyPlaceholderNames.push(displayName);
     return;
   }
 
-  const block = createToolBlock({ name, payload: {}, raw: '' });
+  const block = createToolBlock({ name: displayName, invocationName: name, payload: {}, raw: '' });
   currentToolBlock = block;
-  earlyPlaceholderNames.push(name);
+  earlyPlaceholderNames.push(displayName);
 
   const lastMsg = getLastAssistantMessage();
   if (lastMsg) {
@@ -427,6 +440,10 @@ function consumeEarlyPlaceholder(name: string): boolean {
   if (index === -1) return false;
   earlyPlaceholderNames.splice(index, 1);
   return true;
+}
+
+function getToolDisplayName(invocationName: string): string {
+  return currentToolDescriptors.find((descriptor) => descriptor.invocationName === invocationName)?.name ?? invocationName;
 }
 
 	function toggleBlockCollapse(block: HTMLElement) {
@@ -478,7 +495,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
       if (!entry.resolved) {
         entry.resolved = true;
         resolvedCallRaws.add(call.raw);
-        updateToolBlockWithResult(currentToolBlock, call, result);
+        updateToolBlockWithResult(entry.block, call, result);
       }
     } catch {
       // EXECUTE_TOOL_CALL flow will handle it
@@ -600,31 +617,130 @@ async function restorePersistedToolBlocks() {
   }
 }
 
-function renderRestoredToolBlocks(records: ToolCallRestoreRecord[]) {
-  for (const record of records) {
-    if (record.executions.length === 0) continue;
+async function hydrateToolCallRestoreRecords(records: ToolCallRestoreRecord[]): Promise<ToolCallRestoreRecord[]> {
+  if (records.every((record) => record.executions.length > 0 || record.calls.length === 0)) return records;
 
-    const lastMsg = getLastAssistantMessage();
-    if (!lastMsg) continue;
+  const history = await safeRuntimeSendMessage<ToolCallHistoryRecord[]>({ type: 'GET_TOOL_CALL_HISTORY', payload: { limit: 200 } }) ?? [];
+  return records.map((record) => {
+    if (record.executions.length > 0 || record.calls.length === 0) return record;
+    const executions = record.calls.map((call) => createExecutionRecordFromHistory(call, history));
+    return { ...record, executions };
+  });
+}
 
-    const block = document.createElement('div');
-    block.className = BLOCK_CLASS;
-    block.setAttribute('data-collapsed', 'true');
+function createExecutionRecordFromHistory(call: ToolCall, history: ToolCallHistoryRecord[]): ToolExecutionRecord {
+  const matched = history.find((record) => isSameToolCall(record.call, call));
+  return {
+    name: call.name,
+    provider: call.provider,
+    descriptorId: call.descriptorId,
+    result: matched?.result
+      ? {
+          ok: matched.result.ok,
+          summary: matched.result.summary,
+          detail: matched.result.detail,
+          output: matched.result.output,
+          truncated: matched.result.truncated,
+          error: matched.result.error,
+        }
+      : { ok: false, summary: '历史结果未找到', detail: '该工具调用结果未在本地历史中找到' },
+  };
+}
 
-    const itemsHtml = record.executions.map((exec) => {
-      const dotClass = exec.result.ok ? 'is-done' : 'is-error';
-      const nameClass = exec.result.ok ? 'is-done' : 'is-error';
-      return `<div class="dpp-tb-item">
+function isSameToolCall(a: ToolCall, b: ToolCall): boolean {
+  if (a.raw && b.raw && a.raw === b.raw) return true;
+  if (a.descriptorId && b.descriptorId && a.descriptorId !== b.descriptorId) return false;
+  if (a.name !== b.name) return false;
+  return stableStringify(a.payload) === stableStringify(b.payload);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .toSorted(([a], [b]) => a.localeCompare(b))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+    .join(',')}}`;
+}
+
+function renderRestoredToolBlocks(records: ToolCallRestoreRecord[], attempt = 0) {
+  const pendingRecords: ToolCallRestoreRecord[] = [];
+  const assistantMessages = findAssistantMessages();
+  const usedMessages = new Set<HTMLElement>();
+  const restorableRecords = records.filter((record) => record.executions.length > 0);
+
+  if (assistantMessages.length < restorableRecords.length && attempt < 20) {
+    setTimeout(() => renderRestoredToolBlocks(records, attempt + 1), 300);
+    return;
+  }
+
+  restorableRecords.forEach((record, recordIndex) => {
+    const targetMessage = findAssistantMessageForToolRecord(record, assistantMessages, usedMessages, recordIndex);
+    if (!targetMessage) {
+      pendingRecords.push(record);
+      return;
+    }
+
+    appendRestoredToolBlock(targetMessage, record);
+    usedMessages.add(targetMessage);
+  });
+
+  if (pendingRecords.length > 0 && attempt < 20) {
+    setTimeout(() => renderRestoredToolBlocks(pendingRecords, attempt + 1), 300);
+  }
+}
+
+function findAssistantMessageForToolRecord(
+  record: ToolCallRestoreRecord,
+  assistantMessages: HTMLElement[],
+  usedMessages: Set<HTMLElement>,
+  recordIndex: number,
+): HTMLElement | null {
+  const cleanContent = typeof record.metadata?.cleanContent === 'string' ? record.metadata.cleanContent : '';
+  const normalizedRecordContent = normalizeToolRecordText(cleanContent || record.content);
+
+  if (normalizedRecordContent) {
+    const contentMatch = assistantMessages.find((message) => {
+      if (usedMessages.has(message) || message.querySelector(`.${BLOCK_CLASS}`)) return false;
+      const normalizedMessageText = normalizeToolRecordText(message.textContent || '');
+      return normalizedMessageText.includes(normalizedRecordContent) || normalizedRecordContent.includes(normalizedMessageText);
+    });
+    if (contentMatch) return contentMatch;
+  }
+
+  const assistantIndex = typeof record.metadata?.assistantIndex === 'number' ? record.metadata.assistantIndex : recordIndex;
+  const indexedMessage = assistantMessages[assistantIndex];
+  if (indexedMessage && !usedMessages.has(indexedMessage) && !indexedMessage.querySelector(`.${BLOCK_CLASS}`)) return indexedMessage;
+
+  return assistantMessages.find((message) => !usedMessages.has(message) && !message.querySelector(`.${BLOCK_CLASS}`)) ?? null;
+}
+
+function normalizeToolRecordText(value: string): string {
+  return value
+    .replace(/\s+/g, '')
+    .replace(/工具调用\d*/g, '')
+    .trim();
+}
+
+function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRestoreRecord) {
+  const block = document.createElement('div');
+  block.className = BLOCK_CLASS;
+  block.setAttribute('data-collapsed', 'false');
+
+  const itemsHtml = record.executions.map((exec) => {
+    const dotClass = exec.result.ok ? 'is-done' : 'is-error';
+    const nameClass = exec.result.ok ? 'is-done' : 'is-error';
+    return `<div class="dpp-tb-item">
         <div class="dpp-tb-dot-wrap">
           <span class="dpp-tb-dot ${dotClass}"></span>
         </div>
         <span class="dpp-tb-item-name ${nameClass}">${escapeHtml(exec.name)}</span>
-        <span class="dpp-tb-item-summary">${escapeHtml(exec.result.summary)}</span>
+        <span class="dpp-tb-item-summary">${escapeHtml(exec.result.detail || exec.result.summary)}</span>
       </div>`;
-    }).join('');
+  }).join('');
 
-    block.innerHTML = `
-      <div class="dpp-tb-header" role="button" tabindex="0" aria-expanded="false">
+  block.innerHTML = `
+      <div class="dpp-tb-header" role="button" tabindex="0" aria-expanded="true">
         <div class="dpp-tb-header-ripple"></div>
         <span class="dpp-tb-icon" aria-hidden="true">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
@@ -638,18 +754,17 @@ function renderRestoredToolBlocks(records: ToolCallRestoreRecord[]) {
       <div class="dpp-tb-body">${itemsHtml}</div>
     `;
 
-    const header = block.querySelector('.dpp-tb-header') as HTMLElement;
-    header.addEventListener('click', () => toggleBlockCollapse(block));
-    header.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        toggleBlockCollapse(block);
-      }
-    });
+  const header = block.querySelector('.dpp-tb-header') as HTMLElement;
+  header.addEventListener('click', () => toggleBlockCollapse(block));
+  header.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleBlockCollapse(block);
+    }
+  });
 
-    lastMsg.appendChild(block);
-    injectBlockStyles();
-  }
+  targetMessage.appendChild(block);
+  injectBlockStyles();
 }
 
 // ─── DOM Tool Tag Cleanup ─────────────────────────────────────────
@@ -685,6 +800,10 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
     targets.push(n as Text);
   }
 
+  if (cleanCompleteToolCallsAcrossTextNodes(targets)) {
+    assistantToolCleanupState.delete(assistantMessage);
+  }
+
   const state = assistantToolCleanupState.get(assistantMessage) ?? {
     insideToolBlock: false,
     activeNode: null,
@@ -711,13 +830,95 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
   }
 }
 
+function cleanCompleteToolCallsAcrossTextNodes(nodes: Text[]): boolean {
+  if (nodes.length === 0) return false;
+
+  const segments = nodes.map((node) => node.textContent || '');
+  const combined = segments.join('');
+  if (!hasPotentialToolMarkup(combined)) return false;
+
+  const ranges = findCompleteToolRemovalRanges(combined);
+  if (ranges.length === 0) return false;
+
+  const nodeStarts: number[] = [];
+  let offset = 0;
+  for (const segment of segments) {
+    nodeStarts.push(offset);
+    offset += segment.length;
+  }
+
+  let changed = false;
+  nodes.forEach((node, index) => {
+    const segment = segments[index];
+    const nodeStart = nodeStarts[index];
+    const nodeEnd = nodeStart + segment.length;
+    let next = '';
+    let cursor = 0;
+
+    for (const range of ranges) {
+      if (range.end <= nodeStart || range.start >= nodeEnd) continue;
+      const localStart = Math.max(0, range.start - nodeStart);
+      const localEnd = Math.min(segment.length, range.end - nodeStart);
+      next += segment.slice(cursor, localStart);
+      cursor = Math.max(cursor, localEnd);
+    }
+
+    next += segment.slice(cursor);
+    if (next !== segment) {
+      node.textContent = next;
+      changed = true;
+    }
+  });
+
+  return changed;
+}
+
+function findCompleteToolRemovalRanges(text: string): TextRemovalRange[] {
+  const ranges: TextRemovalRange[] = [];
+  const catalog = createToolInvocationCatalog(currentToolDescriptors, RECOGNIZED_TOOL_TAGS);
+  const regex = createXmlToolCallRegex(catalog);
+  let match: RegExpExecArray | null = regex.exec(text);
+
+  while (match) {
+    ranges.push({ start: match.index, end: match.index + match[0].length, tagName: match[1] ?? null });
+    match = regex.exec(text);
+  }
+
+  const legacyRegex = /<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g;
+  match = legacyRegex.exec(text);
+  while (match) {
+    ranges.push({ start: match.index, end: match.index + match[0].length, tagName: null });
+    match = legacyRegex.exec(text);
+  }
+
+  return mergeTextRemovalRanges(ranges.toSorted((a, b) => a.start - b.start || b.end - a.end));
+}
+
+function mergeTextRemovalRanges(ranges: TextRemovalRange[]): TextRemovalRange[] {
+  const merged: TextRemovalRange[] = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (!previous || range.start > previous.end) {
+      merged.push({ ...range });
+      continue;
+    }
+    previous.end = Math.max(previous.end, range.end);
+    previous.tagName ??= range.tagName;
+  }
+  return merged;
+}
+
 function removeToolMarkupFromText(text: string, state: DomToolCleanupState, node: Text): {
   text: string;
   sawOpeningTag: string | null;
   changed: boolean;
 } {
   let changed = false;
-  let remaining = text.replace(TOOL_COMPLETE_BLOCK_REGEX, () => {
+  const completeBlockRegex = createRecognizedToolTagRegex('complete');
+  const openTagRegex = createRecognizedToolTagRegex('open');
+  const closeTagRegex = createRecognizedToolTagRegex('close');
+
+  let remaining = text.replace(completeBlockRegex, () => {
     changed = true;
     return '';
   });
@@ -734,8 +935,8 @@ function removeToolMarkupFromText(text: string, state: DomToolCleanupState, node
     output = state.visiblePrefix;
     cursor = state.visiblePrefix.length;
   } else if (state.insideToolBlock) {
-    const nextOpenMatch = remaining.match(TOOL_OPEN_TAG_REGEX);
-    const nextEndMatch = remaining.match(TOOL_END_TAG_REGEX);
+    const nextOpenMatch = remaining.match(openTagRegex);
+    const nextEndMatch = remaining.match(closeTagRegex);
     if (nextOpenMatch && (!nextEndMatch || nextOpenMatch.index! < nextEndMatch.index!)) {
       state.insideToolBlock = false;
       state.activeNode = null;
@@ -745,7 +946,7 @@ function removeToolMarkupFromText(text: string, state: DomToolCleanupState, node
 
   while (cursor < remaining.length) {
     if (state.insideToolBlock) {
-      const endMatch = remaining.slice(cursor).match(TOOL_END_TAG_REGEX);
+      const endMatch = remaining.slice(cursor).match(closeTagRegex);
       if (!endMatch || endMatch.index === undefined) {
         cursor = remaining.length;
         changed = true;
@@ -759,7 +960,7 @@ function removeToolMarkupFromText(text: string, state: DomToolCleanupState, node
       continue;
     }
 
-    const openMatch = remaining.slice(cursor).match(TOOL_OPEN_TAG_REGEX);
+    const openMatch = remaining.slice(cursor).match(openTagRegex);
     if (!openMatch || openMatch.index === undefined) {
       output += remaining.slice(cursor);
       break;
@@ -855,15 +1056,24 @@ function setupDOMObserver() {
 }
 
 function hasPotentialToolMarkup(text: string): boolean {
-  return RECOGNIZED_TOOL_TAGS.some((tag) => text.includes(`<${tag}>`) || text.includes(`</${tag}>`)) || /<｜DSML｜tool_calls>/.test(text);
+  return getRecognizedToolTagNames().some((tag) => text.includes(`<${tag}>`) || text.includes(`</${tag}>`)) || /<｜DSML｜tool_calls>/.test(text);
 }
 
 function createRecognizedToolTagRegex(kind: 'open' | 'close' | 'complete'): RegExp {
-  const names = RECOGNIZED_TOOL_TAGS.map(escapeRegExp).join('|');
+  const names = getRecognizedToolTagNames().map(escapeRegExp).join('|');
   if (!names) return /$a/g;
   if (kind === 'open') return new RegExp(`<(${names})>`);
   if (kind === 'close') return new RegExp(`<\\/(${names})>`);
   return new RegExp(`<(${names})>\\s*\\{[\\s\\S]*?\\}\\s*<\\/\\1>`, 'g');
+}
+
+function getRecognizedToolTagNames(): string[] {
+  const names = new Set(RECOGNIZED_TOOL_TAGS);
+  for (const descriptor of currentToolDescriptors) {
+    const invocationName = descriptor.invocationName.trim();
+    if (invocationName) names.add(invocationName);
+  }
+  return [...names];
 }
 
 function escapeRegExp(value: string): string {

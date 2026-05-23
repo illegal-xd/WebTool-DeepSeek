@@ -264,7 +264,8 @@ async function handleMessage(
     }
 
     case 'CLEAR_TOOL_CALL_HISTORY': {
-      await clearToolCallHistory();
+      const payload = message.payload as { serverId?: string } | undefined;
+      await clearToolCallHistory(payload?.serverId);
       await broadcastToolCallHistoryUpdate(sender.tab?.id);
       return { ok: true };
     }

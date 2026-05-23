@@ -22,7 +22,6 @@ export async function getMcpToolDescriptors(options?: { includeDisabled?: boolea
     if (!server) continue;
     if (!options?.includeDisabled && !server.enabled) continue;
     if (options?.maxAgeMs != null && now - cache.refreshedAt > options.maxAgeMs) continue;
-    if (cache.expiresAt <= now) continue;
     const policyDescriptors = applyMcpToolPolicy(cache.descriptors, server);
     descriptors.push(...policyDescriptors.filter((descriptor) => options?.includeDisabled || (descriptor.execution.enabled && descriptor.execution.mode === 'auto')));
   }

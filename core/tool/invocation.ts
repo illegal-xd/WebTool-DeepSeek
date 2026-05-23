@@ -22,15 +22,17 @@ export function createToolInvocationCatalog(
 ): ToolInvocationCatalog {
   const descriptorByInvocationName = new Map<string, ToolDescriptor>();
   const descriptorByName = new Map<string, ToolDescriptor>();
-  const recognizedTagSet = new Set(recognizedTags.map((tag) => tag.trim()).filter(Boolean));
+  const invocationNames = new Set(recognizedTags.map((tag) => tag.trim()).filter(Boolean));
   for (const descriptor of descriptors) {
     const invocationName = descriptor.invocationName.trim();
-    if (!recognizedTagSet.has(invocationName)) continue;
-    if (invocationName && !descriptorByInvocationName.has(invocationName)) descriptorByInvocationName.set(invocationName, descriptor);
+    if (invocationName) {
+      invocationNames.add(invocationName);
+      if (!descriptorByInvocationName.has(invocationName)) descriptorByInvocationName.set(invocationName, descriptor);
+    }
     const name = descriptor.name.trim();
     if (name && !descriptorByName.has(name)) descriptorByName.set(name, descriptor);
   }
-  return { descriptors, invocationNames: [...descriptorByInvocationName.keys()], descriptorByInvocationName, descriptorByName };
+  return { descriptors, invocationNames: [...invocationNames], descriptorByInvocationName, descriptorByName };
 }
 
 export function createXmlToolCallRegex(catalog: ToolInvocationCatalog): RegExp {

@@ -43,6 +43,9 @@ let hookState: HookState = {
 
 let originalFetch: typeof window.fetch | null = null;
 
+/** Cache of the raw history API response, re-processed when MCP tool descriptors arrive late */
+let storedHistoryRaw: unknown = null;
+
 interface ToolStreamFilterState {
   insideToolBlock: boolean;
   sseRemainder: string;
@@ -50,6 +53,24 @@ interface ToolStreamFilterState {
 
 export function updateHookState(partial: Partial<HookState>) {
   hookState = { ...hookState, ...partial };
+}
+
+/** Re-process the stored raw history response with the current (now-populated) tool descriptors. */
+export async function reprocessStoredHistory(): Promise<void> {
+  if (!storedHistoryRaw) return;
+  const descriptors = hookState.toolDescriptors;
+  const mcpCount = descriptors.filter((d) => d.provider?.kind === 'mcp').length;
+  if (mcpCount === 0) return;
+  try {
+    const json = JSON.parse(JSON.stringify(storedHistoryRaw));
+    const { records } = stripToolCallsFromHistoryInternal(json);
+    if (records.length > 0) {
+      hookState.onToolCallsRestored(records);
+    }
+    storedHistoryRaw = null;
+  } catch {
+    // skip reprocessing errors silently
+  }
 }
 
 export function installFetchHook() {
@@ -591,7 +612,8 @@ function hookHistoryFetch() {
       const clone = response.clone();
       try {
         const json = await clone.json();
-        const { cleaned, records } = stripToolCallsFromHistory(json);
+        storedHistoryRaw = json;
+        const { cleaned, records } = stripToolCallsFromHistoryInternal(json);
         if (records.length > 0) {
           hookState.onToolCallsRestored(records);
         }
@@ -625,7 +647,8 @@ function hookHistoryXHR() {
         if (this.readyState === 4) {
           try {
             const json = JSON.parse(this.responseText);
-            const { cleaned, records } = stripToolCallsFromHistory(json);
+            storedHistoryRaw = json;
+            const { cleaned, records } = stripToolCallsFromHistoryInternal(json);
             if (records.length > 0) {
               hookState.onToolCallsRestored(records);
             }
@@ -650,18 +673,22 @@ function hookHistoryXHR() {
   };
 }
 
-function stripToolCallsFromHistory(json: any): { cleaned: any; records: ToolCallRestoreRecord[] } {
+function stripToolCallsFromHistoryInternal(json: any): { cleaned: any; records: ToolCallRestoreRecord[] } {
   const records: ToolCallRestoreRecord[] = [];
   const cleaned = { ...json };
 
   if (cleaned.chat_messages && Array.isArray(cleaned.chat_messages)) {
+    let assistantIndex = -1;
     cleaned.chat_messages = cleaned.chat_messages.map((msg: any) => {
       if (!msg || msg.role !== 'assistant') return msg;
+      assistantIndex += 1;
 
-      const toolCalls = extractToolCalls(msg.content || '', { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
+      const toolCallSource = getHistoryToolCallSource(msg);
+      const toolCalls = extractToolCalls(toolCallSource, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
       if (toolCalls.length === 0) return msg;
 
       const cleanContent = stripToolCalls(msg.content || '', { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
+      const cleanToolCallSource = stripToolCalls(toolCallSource, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
       const cleanFragments = msg.fragments
         ? msg.fragments.map((f: any) => ({
             ...f,
@@ -673,10 +700,11 @@ function stripToolCallsFromHistory(json: any): { cleaned: any; records: ToolCall
         id: msg.id || crypto.randomUUID(),
         calls: toolCalls,
         executions: [],
-        content: msg.content || '',
+        content: toolCallSource,
         source: 'history',
         url: '',
         timestamp: Date.now(),
+        metadata: { cleanContent: cleanContent || cleanToolCallSource, assistantIndex },
       });
 
       return {
@@ -688,6 +716,17 @@ function stripToolCallsFromHistory(json: any): { cleaned: any; records: ToolCall
   }
 
   return { cleaned, records };
+}
+
+function getHistoryToolCallSource(msg: any): string {
+  const parts: string[] = [];
+  if (typeof msg.content === 'string') parts.push(msg.content);
+  if (Array.isArray(msg.fragments)) {
+    for (const fragment of msg.fragments) {
+      if (typeof fragment?.content === 'string') parts.push(fragment.content);
+    }
+  }
+  return parts.join('\n');
 }
 
 // ─── IndexedDB Intercept ───────────────────────────────────────────
@@ -711,7 +750,10 @@ function hookIndexedDB() {
             }
             return value;
           }
-          return Reflect.get(target, prop);
+          return getNativeRequestProperty(target, prop);
+        },
+        set(target, prop, value) {
+          return Reflect.set(target, prop, value, target);
         },
       });
     }
@@ -733,13 +775,21 @@ function hookIndexedDB() {
             }
             return value;
           }
-          return Reflect.get(target, prop);
+          return getNativeRequestProperty(target, prop);
+        },
+        set(target, prop, value) {
+          return Reflect.set(target, prop, value, target);
         },
       });
     }
 
     return result;
   };
+}
+
+function getNativeRequestProperty(target: IDBRequest, prop: string | symbol): unknown {
+  const value = Reflect.get(target, prop, target);
+  return typeof value === 'function' ? value.bind(target) : value;
 }
 
 function cleanHistoryResult(item: any): any {

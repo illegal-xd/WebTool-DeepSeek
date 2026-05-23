@@ -1,4 +1,4 @@
-import { installFetchHook, updateHookState } from '../core/interceptor/fetch-hook';
+import { installFetchHook, updateHookState, reprocessStoredHistory } from '../core/interceptor/fetch-hook';
 import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
@@ -99,6 +99,7 @@ export default defineContentScript({
             toolDescriptors: toolDescriptors ?? [],
             recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS],
           });
+          reprocessStoredHistory();
           initSkillPopup(skills);
           initMemoryPopup(memories);
           initPresetPopup(presets);
@@ -108,6 +109,7 @@ export default defineContentScript({
         case 'SYNC_TOOL_DESCRIPTORS': {
           const { toolDescriptors, recognizedToolTags } = event.data as { toolDescriptors?: ToolDescriptor[]; recognizedToolTags?: string[] };
           updateHookState({ toolDescriptors: toolDescriptors ?? [], recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS] });
+          reprocessStoredHistory();
           break;
         }
       }

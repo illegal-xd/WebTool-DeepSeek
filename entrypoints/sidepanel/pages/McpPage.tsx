@@ -155,6 +155,13 @@ export default function McpPage() {
     await load();
   };
 
+  const clearMcpHistory = async () => {
+    if (!selected) return;
+    if (!confirm('清空操作将删除所有记录的 mcp 调用数据，请确认删除！')) return;
+    await chrome.runtime.sendMessage({ type: 'CLEAR_TOOL_CALL_HISTORY', payload: { serverId: selected.id } });
+    await load();
+  };
+
   const refresh = async (server: McpServerConfig, testOnly = false) => {
     setBusyId(server.id);
     setMessage('');
@@ -277,6 +284,7 @@ export default function McpPage() {
                   <button type="button" className="ds-btn-secondary rounded-lg px-2 py-1 text-[11px]" onClick={() => void toggleEnabled(selected)}>{selected.enabled ? '停用' : '启用'}</button>
                   <button type="button" className="ds-btn-secondary rounded-lg px-2 py-1 text-[11px]" onClick={() => startEdit(selected)}>编辑</button>
                   <button type="button" className="ds-btn-danger rounded-lg px-2 py-1 text-[11px]" onClick={() => void remove(selected)}>删除</button>
+                  {/* <button type="button" className="ds-btn-danger rounded-lg px-2 py-1 text-[11px]" onClick={() => void clearMcpHistory()}>清空调用</button> */}
                 </div>
               </div>
 
