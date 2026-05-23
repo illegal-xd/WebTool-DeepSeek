@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Memory, MemoryType, NewMemory } from '../../../core/types';
 import { memoryWeight } from '../../../core/weighting';
 import MemoryCard from '../components/MemoryCard';
 import MemoryForm from '../components/MemoryForm';
+import SidepanelModal from '../components/SidepanelModal';
 import { MEMORY_TYPE_CONFIG } from '../constants';
 
 const FILTER_TYPES: { key: MemoryType | 'all'; label: string }[] = [
@@ -16,12 +17,12 @@ export default function MemoryPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingMemory, setEditingMemory] = useState<Memory | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const list: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
     setMemories(list ?? []);
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   // Listen for state updates from background (e.g., AI tool calls)
   useEffect(() => {
@@ -32,20 +33,7 @@ export default function MemoryPage() {
     };
     chrome.runtime.onMessage.addListener(handler);
     return () => chrome.runtime.onMessage.removeListener(handler);
-  }, []);
-
-  useEffect(() => {
-    const mainEl = document.querySelector('main');
-    if (!mainEl) return;
-    if (showForm) {
-      mainEl.style.overflowY = 'hidden';
-    } else {
-      mainEl.style.overflowY = 'auto';
-    }
-    return () => {
-      mainEl.style.overflowY = 'auto';
-    };
-  }, [showForm]);
+  }, [load]);
 
   const filtered = (filter === 'all' ? memories : memories.filter((m) => m.type === filter))
     .toSorted((a, b) => (
@@ -109,6 +97,7 @@ export default function MemoryPage() {
         <div className="flex gap-1.5 flex-wrap">
           {FILTER_TYPES.map((t) => (
             <button
+              type="button"
               key={t.key}
               onClick={() => setFilter(t.key)}
               className="px-2.5 py-1 text-xs rounded-full transition-all duration-150"
@@ -124,30 +113,25 @@ export default function MemoryPage() {
           ))}
         </div>
         <button
+          type="button"
           onClick={() => { setEditingMemory(null); setShowForm(!showForm); }}
           className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1 shrink-0"
         >
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <svg aria-hidden="true" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
           </svg>
           新增
         </button>
       </div>
 
-      {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="w-full max-w-md">
-            <div className="animate-slide-down">
-              <MemoryForm
-                key={editingMemory?.id ?? 'new'}
-                initial={editingMemory}
-                onSave={handleSave}
-                onCancel={handleCancel}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      <SidepanelModal open={showForm} title={editingMemory ? '编辑记忆' : '新增记忆'} onClose={handleCancel}>
+        <MemoryForm
+          key={editingMemory?.id ?? 'new'}
+          initial={editingMemory}
+          onSave={handleSave}
+          onCancel={handleCancel}
+        />
+      </SidepanelModal>
 
       {filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 gap-3">

@@ -1,0 +1,168 @@
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+
+  --color-surface-default: var(--ds-surface-default);
+  --color-surface-raised: var(--ds-surface-raised);
+  --color-surface-muted: var(--ds-surface-muted);
+  --color-surface-highlight: var(--ds-surface-highlight);
+  --color-surface-sunken: var(--ds-surface-sunken);
+  --color-surface-overlay: var(--ds-surface-overlay);
+  --color-surface-scrim: var(--ds-surface-scrim);
+
+  --color-text-primary: var(--ds-text-primary);
+  --color-text-secondary: var(--ds-text-secondary);
+  --color-text-muted: var(--ds-text-muted);
+  --color-text-disabled: var(--ds-text-disabled);
+  --color-text-inverse: var(--ds-text-inverse);
+
+  --color-border-default: var(--ds-border-default);
+  --color-border-subtle: var(--ds-border-subtle);
+  --color-border-strong: var(--ds-border-strong);
+  --color-border-focus: var(--ds-border-focus);
+
+  --color-accent-primary: var(--ds-accent-primary);
+  --color-accent-hover: var(--ds-accent-hover);
+  --color-accent-active: var(--ds-accent-active);
+  --color-accent-muted: var(--ds-accent-muted);
+  --color-accent-contrast: var(--ds-accent-contrast);
+
+  --color-status-success: var(--ds-status-success);
+  --color-status-success-bg: var(--ds-status-success-bg);
+  --color-status-success-border: var(--ds-status-success-border);
+  --color-status-warning: var(--ds-status-warning);
+  --color-status-warning-bg: var(--ds-status-warning-bg);
+  --color-status-warning-border: var(--ds-status-warning-border);
+  --color-status-error: var(--ds-status-error);
+  --color-status-error-bg: var(--ds-status-error-bg);
+  --color-status-error-border: var(--ds-status-error-border);
+  --color-status-info: var(--ds-status-info);
+  --color-status-info-bg: var(--ds-status-info-bg);
+  --color-status-info-border: var(--ds-status-info-border);
+
+  --color-badge-user: var(--ds-badge-user);
+  --color-badge-user-bg: var(--ds-badge-user-bg);
+  --color-badge-user-border: var(--ds-badge-user-border);
+  --color-badge-feedback: var(--ds-badge-feedback);
+  --color-badge-feedback-bg: var(--ds-badge-feedback-bg);
+  --color-badge-feedback-border: var(--ds-badge-feedback-border);
+  --color-badge-topic: var(--ds-badge-topic);
+  --color-badge-topic-bg: var(--ds-badge-topic-bg);
+  --color-badge-topic-border: var(--ds-badge-topic-border);
+  --color-badge-reference: var(--ds-badge-reference);
+  --color-badge-reference-bg: var(--ds-badge-reference-bg);
+  --color-badge-reference-border: var(--ds-badge-reference-border);
+
+  --radius-card: 0.875rem;
+  --radius-control: 0.75rem;
+  --radius-badge: 999px;
+  --shadow-panel: 0 12px 32px var(--ds-shadow-color-panel);
+  --shadow-card: 0 1px 2px var(--ds-shadow-color-card);
+  --shadow-card-hover: 0 8px 24px var(--ds-shadow-color-card-hover);
+  --shadow-focus: 0 0 0 3px var(--ds-accent-ring);
+}
+
+:root {
+  color-scheme: light dark;
+
+  --ds-surface-default: light-dark(#ffffff, #0f172a);
+  --ds-surface-raised: light-dark(#ffffff, #111c2f);
+  --ds-surface-muted: light-dark(#f7f8fa, #172033);
+  --ds-surface-highlight: light-dark(#eef1ff, #1e2b52);
+  --ds-surface-sunken: light-dark(#eef2f7, #0b1120);
+  --ds-surface-overlay: light-dark(#ffffff, #121a2b);
+  --ds-surface-scrim: light-dark(rgb(15 23 42 / 0.42), rgb(0 0 0 / 0.62));
+
+  --ds-text-primary: light-dark(#1d1d1f, #f8fafc);
+  --ds-text-secondary: light-dark(#6b7280, #cbd5e1);
+  --ds-text-muted: light-dark(#9ca3af, #94a3b8);
+  --ds-text-disabled: light-dark(#cbd5e1, #64748b);
+  --ds-text-inverse: light-dark(#ffffff, #0f172a);
+
+  --ds-border-default: light-dark(#e5e7eb, #334155);
+  --ds-border-subtle: light-dark(#f1f5f9, #1e293b);
+  --ds-border-strong: light-dark(#d1d5db, #475569);
+  --ds-border-focus: light-dark(#4d6bfe, #8ea2ff);
+
+  --ds-accent-primary: light-dark(#4d6bfe, #8ea2ff);
+  --ds-accent-hover: light-dark(#3b5bee, #a4b4ff);
+  --ds-accent-active: light-dark(#2948d8, #c0cbff);
+  --ds-accent-muted: light-dark(#eef1ff, #1e2b52);
+  --ds-accent-contrast: light-dark(#ffffff, #10172a);
+  --ds-accent-ring: light-dark(rgb(77 107 254 / 0.16), rgb(142 162 255 / 0.28));
+
+  --ds-status-success: light-dark(#059669, #34d399);
+  --ds-status-success-bg: light-dark(#ecfdf5, #052e24);
+  --ds-status-success-border: light-dark(#a7f3d0, #116149);
+  --ds-status-warning: light-dark(#d97706, #fbbf24);
+  --ds-status-warning-bg: light-dark(#fffbeb, #3a2604);
+  --ds-status-warning-border: light-dark(#fde68a, #854d0e);
+  --ds-status-error: light-dark(#dc2626, #f87171);
+  --ds-status-error-bg: light-dark(#fef2f2, #3b0a0a);
+  --ds-status-error-border: light-dark(#fecaca, #7f1d1d);
+  --ds-status-info: light-dark(#2563eb, #60a5fa);
+  --ds-status-info-bg: light-dark(#eff6ff, #0b214a);
+  --ds-status-info-border: light-dark(#bfdbfe, #1d4ed8);
+
+  --ds-badge-user: light-dark(#2563eb, #60a5fa);
+  --ds-badge-user-bg: light-dark(#eff6ff, #0b214a);
+  --ds-badge-user-border: light-dark(#bfdbfe, #1d4ed8);
+  --ds-badge-feedback: light-dark(#d97706, #fbbf24);
+  --ds-badge-feedback-bg: light-dark(#fffbeb, #3a2604);
+  --ds-badge-feedback-border: light-dark(#fde68a, #854d0e);
+  --ds-badge-topic: light-dark(#7c3aed, #a78bfa);
+  --ds-badge-topic-bg: light-dark(#f5f3ff, #2e1065);
+  --ds-badge-topic-border: light-dark(#ddd6fe, #6d28d9);
+  --ds-badge-reference: light-dark(#059669, #34d399);
+  --ds-badge-reference-bg: light-dark(#ecfdf5, #052e24);
+  --ds-badge-reference-border: light-dark(#a7f3d0, #116149);
+
+  --ds-weight-permanent: light-dark(#4d6bfe, #8ea2ff);
+  --ds-weight-contextual: light-dark(#8b5cf6, #a78bfa);
+  --ds-weight-temporary: light-dark(#10b981, #34d399);
+  --ds-token-budget-track: light-dark(#e5e7eb, #334155);
+  --ds-token-budget-fill: light-dark(#4d6bfe, #8ea2ff);
+
+  --ds-shadow-color-card: light-dark(rgb(15 23 42 / 0.06), rgb(0 0 0 / 0.28));
+  --ds-shadow-color-card-hover: light-dark(rgb(15 23 42 / 0.10), rgb(0 0 0 / 0.36));
+  --ds-shadow-color-panel: light-dark(rgb(15 23 42 / 0.12), rgb(0 0 0 / 0.48));
+
+  /* Legacy aliases for incremental migration from the current --ds-* layer. */
+  --ds-blue: var(--ds-accent-primary);
+  --ds-blue-hover: var(--ds-accent-hover);
+  --ds-blue-light: var(--ds-accent-muted);
+  --ds-blue-glow: var(--ds-accent-ring);
+  --ds-blue-shadow: 0 1px 3px color-mix(in srgb, var(--ds-accent-primary) 30%, transparent);
+  --ds-bg: var(--ds-surface-default);
+  --ds-surface: var(--ds-surface-muted);
+  --ds-border: var(--ds-border-default);
+  --ds-border-hover: var(--ds-border-strong);
+  --ds-text: var(--ds-text-primary);
+  --ds-text-tertiary: var(--ds-text-muted);
+  --ds-shadow-sm: var(--shadow-card);
+  --ds-shadow-md: var(--shadow-card-hover);
+  --ds-shadow-lg: var(--shadow-panel);
+  --ds-danger: var(--ds-status-error);
+  --ds-danger-bg: var(--ds-status-error-bg);
+  --ds-danger-bg-hover: color-mix(in srgb, var(--ds-status-error-bg) 86%, var(--ds-status-error) 14%);
+  --ds-danger-border: var(--ds-status-error-border);
+  --ds-danger-border-hover: var(--ds-status-error);
+  --ds-success: var(--ds-status-success);
+  --ds-success-bg: var(--ds-status-success-bg);
+  --ds-success-border: var(--ds-status-success-border);
+  --ds-warning: var(--ds-status-warning);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+html {
+  background: var(--ds-surface-default);
+  color: var(--ds-text-primary);
+}

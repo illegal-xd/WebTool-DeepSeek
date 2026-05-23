@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SystemPromptPreset } from '../../../core/types';
 import { sortPresetsByWeight } from '../../../core/weighting';
 import PresetCard from '../components/PresetCard';
 import PresetForm from '../components/PresetForm';
+import SidepanelModal from '../components/SidepanelModal';
 
 export default function PresetPage() {
   const [presets, setPresets] = useState<SystemPromptPreset[]>([]);
@@ -12,14 +13,14 @@ export default function PresetPage() {
   const [isFormWide, setIsFormWide] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [list, active] = await Promise.all([
       chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
       chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
     ]);
     setPresets(list ?? []);
     setActiveId((active as SystemPromptPreset | null)?.id ?? null);
-  };
+  }, []);
 
   useEffect(() => {
     load();
@@ -30,20 +31,7 @@ export default function PresetPage() {
     };
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, []);
-
-  useEffect(() => {
-    const mainEl = document.querySelector('main');
-    if (!mainEl) return;
-    if (showForm) {
-      mainEl.style.overflowY = 'hidden';
-    } else {
-      mainEl.style.overflowY = 'auto';
-    }
-    return () => {
-      mainEl.style.overflowY = 'auto';
-    };
-  }, [showForm]);
+  }, [load]);
 
   const handleSave = async (preset: SystemPromptPreset) => {
     await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
@@ -138,16 +126,17 @@ export default function PresetPage() {
             onClick={() => fileInputRef.current?.click()}
             className="ds-btn-cancel px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 flex items-center gap-1"
           >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <svg aria-hidden="true" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
             </svg>
             导入
           </button> */}
           <button
+            type="button"
             onClick={() => { setEditing(undefined); setShowForm(!showForm); }}
             className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1"
           >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <svg aria-hidden="true" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
             新建
@@ -155,21 +144,15 @@ export default function PresetPage() {
         </div>
       </div>
 
-      {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className={`w-full transition-all duration-300 ${isFormWide ? 'max-w-3xl' : 'max-w-md'}`}>
-            <div className="animate-slide-down">
-              <PresetForm
-                key={editing ? `edit-${editing.id}` : 'new'}
-                initial={editing}
-                onSave={handleSave}
-                onCancel={handleCancel}
-                onWidthChange={setIsFormWide}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      <SidepanelModal open={showForm} title={editing ? '编辑系统预设' : '新建系统预设'} maxWidth={isFormWide ? 'lg' : 'md'} onClose={handleCancel}>
+        <PresetForm
+          key={editing ? `edit-${editing.id}` : 'new'}
+          initial={editing}
+          onSave={handleSave}
+          onCancel={handleCancel}
+          onWidthChange={setIsFormWide}
+        />
+      </SidepanelModal>
 
       <div className="space-y-2">
         {sortPresetsByWeight(presets).map((p) => (

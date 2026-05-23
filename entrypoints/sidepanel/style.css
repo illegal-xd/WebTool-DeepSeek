@@ -1,30 +1,31 @@
 @import 'tailwindcss';
+@import '../../styles/tokens.css';
+@import '../../styles/components.css';
 
 :root {
-  --ds-blue: #4D6BFE;
-  --ds-blue-hover: #3B5BEE;
-  --ds-blue-light: #EEF1FF;
-  --ds-blue-glow: rgba(77, 107, 254, 0.12);
-  --ds-blue-shadow: 0 1px 3px rgba(77, 107, 254, 0.3);
-  --ds-bg: #FFFFFF;
-  --ds-surface: #F7F8FA;
-  --ds-border: #E5E7EB;
-  --ds-border-hover: #D1D5DB;
-  --ds-text: #1D1D1F;
-  --ds-text-secondary: #6B7280;
-  --ds-text-tertiary: #9CA3AF;
-  --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --ds-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
-  --ds-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
-  --ds-danger: #EF4444;
-  --ds-danger-bg: #FEF2F2;
-  --ds-danger-bg-hover: #FEE2E2;
-  --ds-danger-border: #FECACA;
-  --ds-danger-border-hover: #FCA5A5;
-  --ds-success: #10B981;
-  --ds-success-bg: #ECFDF5;
-  --ds-success-border: #A7F3D0;
-  --ds-warning: #F59E0B;
+  --ds-blue: var(--ds-accent-primary);
+  --ds-blue-hover: var(--ds-accent-hover);
+  --ds-blue-light: var(--ds-accent-muted);
+  --ds-blue-glow: var(--ds-accent-ring);
+  --ds-blue-shadow: 0 1px 3px color-mix(in srgb, var(--ds-accent-primary) 30%, transparent);
+  --ds-bg: var(--ds-surface-default);
+  --ds-surface: var(--ds-surface-muted);
+  --ds-border: var(--ds-border-default);
+  --ds-border-hover: var(--ds-border-strong);
+  --ds-text: var(--ds-text-primary);
+  --ds-text-tertiary: var(--ds-text-muted);
+  --ds-shadow-sm: var(--shadow-card);
+  --ds-shadow-md: var(--shadow-card-hover);
+  --ds-shadow-lg: var(--shadow-panel);
+  --ds-danger: var(--ds-status-error);
+  --ds-danger-bg: var(--ds-status-error-bg);
+  --ds-danger-bg-hover: color-mix(in srgb, var(--ds-status-error-bg) 86%, var(--ds-status-error) 14%);
+  --ds-danger-border: var(--ds-status-error-border);
+  --ds-danger-border-hover: var(--ds-status-error);
+  --ds-success: var(--ds-status-success);
+  --ds-success-bg: var(--ds-status-success-bg);
+  --ds-success-border: var(--ds-status-success-border);
+  --ds-warning: var(--ds-status-warning);
 }
 
 body {

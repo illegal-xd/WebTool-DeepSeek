@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Skill } from '../../../core/types';
 import { sortSkillsByWeight } from '../../../core/weighting';
 import SkillCard from '../components/SkillCard';
 import SkillForm from '../components/SkillForm';
+import SidepanelModal from '../components/SidepanelModal';
 
 function SkillSection({
   title,
@@ -32,19 +33,22 @@ function SkillSection({
   if (skills.length === 0) return null;
   return (
     <div className="space-y-2">
-      <div
-        className={`flex items-center justify-between ${
-          collapsible ? 'cursor-pointer select-none py-0.5 group' : ''
+      <button
+        type="button"
+        className={`w-full text-left flex items-center justify-between ${
+          collapsible ? 'cursor-pointer select-none py-0.5 group' : 'cursor-default'
         }`}
         onClick={collapsible ? toggleExpanded : undefined}
+        disabled={!collapsible}
       >
         <h3 className="text-[11px] font-medium uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--ds-text-tertiary)' }}>
           <span>{title}</span>
           <span className="text-[10px] opacity-75 font-normal">({skills.length})</span>
         </h3>
         {collapsible && (
-          <svg
-            className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+            <svg
+              aria-hidden="true"
+              className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
             style={{ color: 'var(--ds-text-tertiary)' }}
             fill="none"
             viewBox="0 0 24 24"
@@ -54,7 +58,7 @@ function SkillSection({
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         )}
-      </div>
+      </button>
       {(!collapsible || isExpanded) && (
         <div className="space-y-2 animate-fade-in">
           {skills.map((s) => (
@@ -77,25 +81,12 @@ export default function SkillPage() {
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
   const [isFormWide, setIsFormWide] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const list: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
     setSkills(list ?? []);
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
-
-  useEffect(() => {
-    const mainEl = document.querySelector('main');
-    if (!mainEl) return;
-    if (showForm || editingSkill) {
-      mainEl.style.overflowY = 'hidden';
-    } else {
-      mainEl.style.overflowY = 'auto';
-    }
-    return () => {
-      mainEl.style.overflowY = 'auto';
-    };
-  }, [showForm, editingSkill]);
+  useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (name: string) => {
     if (editingSkill?.name === name) {
@@ -140,6 +131,7 @@ export default function SkillPage() {
           可用 Skill
         </h2>
         <button
+          type="button"
           onClick={() => {
             if (editingSkill) {
               setEditingSkill(null);
@@ -150,28 +142,22 @@ export default function SkillPage() {
           }}
           className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1"
         >
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <svg aria-hidden="true" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
           </svg>
           自定义
         </button>
       </div>
 
-      {(showForm || editingSkill) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className={`w-full transition-all duration-300 ${isFormWide ? 'max-w-3xl' : 'max-w-md'}`}>
-            <div className="animate-slide-down">
-              <SkillForm
-                key={editingSkill ? `edit-${editingSkill.name}` : 'new'}
-                initialSkill={editingSkill || undefined}
-                onSave={handleSave}
-                onCancel={handleCancel}
-                onWidthChange={setIsFormWide}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      <SidepanelModal open={showForm || Boolean(editingSkill)} title={editingSkill ? '编辑自定义 Skill' : '新增自定义 Skill'} maxWidth={isFormWide ? 'lg' : 'md'} onClose={handleCancel}>
+        <SkillForm
+          key={editingSkill ? `edit-${editingSkill.name}` : 'new'}
+          initialSkill={editingSkill || undefined}
+          onSave={handleSave}
+          onCancel={handleCancel}
+          onWidthChange={setIsFormWide}
+        />
+      </SidepanelModal>
 
       <SkillSection title="内置" skills={builtin} collapsible={true} />
       <SkillSection title="自定义" skills={custom} onEdit={setEditingSkill} onDelete={handleDelete} />

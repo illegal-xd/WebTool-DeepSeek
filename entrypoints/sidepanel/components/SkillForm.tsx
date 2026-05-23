@@ -92,18 +92,9 @@ export default function SkillForm({ initialSkill, onSave, onCancel, onWidthChang
   });
 
   return (
-    <div
-      className="ds-form rounded-xl flex overflow-hidden transition-all duration-300"
-      style={{
-        background: 'var(--ds-bg)',
-        borderColor: 'var(--ds-blue)',
-      }}
-    >
+    <div className="flex overflow-hidden transition-all duration-300">
       {/* Left Column: Form Fields */}
       <form onSubmit={handleSubmit} className="flex-1 p-4 space-y-3 min-w-[280px]">
-        <div className="flex items-center justify-between text-xs font-semibold pb-1 border-b border-dashed" style={{ color: 'var(--ds-text-secondary)', borderColor: 'var(--ds-border)' }}>
-          <span>{initialSkill ? '编辑自定义 Skill' : '新增自定义 Skill'}</span>
-        </div>
         <div>
           <input
             type="text"
@@ -128,10 +119,11 @@ export default function SkillForm({ initialSkill, onSave, onCancel, onWidthChang
         />
 
         <div>
-          <label className="text-[11px] mb-1.5 block font-medium" style={{ color: 'var(--ds-text-tertiary)' }}>
+          <label htmlFor="skill-instructions" className="text-[11px] mb-1.5 block font-medium" style={{ color: 'var(--ds-text-tertiary)' }}>
             指令（Markdown 格式，告诉 AI 如何执行）
           </label>
           <textarea
+            id="skill-instructions"
             rows={12}
             placeholder="你是一位...&#10;&#10;## 核心原则&#10;- ..."
             value={instructions}
@@ -250,10 +242,11 @@ export default function SkillForm({ initialSkill, onSave, onCancel, onWidthChang
                 const isSelected = m.id !== undefined && selectedMemoryIds.includes(m.id);
                 const typeInfo = MEMORY_TYPE_MAP[m.type] ?? MEMORY_TYPE_MAP.topic;
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={m.id}
                     onClick={() => m.id !== undefined && toggleMemory(m.id)}
-                    className="p-2.5 rounded-lg border cursor-pointer transition-all duration-150 select-none flex flex-col gap-1"
+                    className="w-full text-left p-2.5 rounded-lg border cursor-pointer transition-all duration-150 select-none flex flex-col gap-1"
                     style={{
                       borderWidth: '1px',
                       borderColor: isSelected ? 'var(--ds-blue)' : 'var(--ds-border)',
@@ -278,7 +271,7 @@ export default function SkillForm({ initialSkill, onSave, onCancel, onWidthChang
                     <p className="text-[10px] line-clamp-2 leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
                       {m.content}
                     </p>
-                  </div>
+                  </button>
                 );
               })
             )}

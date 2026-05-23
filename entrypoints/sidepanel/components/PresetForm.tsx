@@ -90,18 +90,9 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
   });
 
   return (
-    <div
-      className="ds-form rounded-xl flex overflow-hidden transition-all duration-300"
-      style={{
-        background: 'var(--ds-bg)',
-        borderColor: 'var(--ds-blue)',
-      }}
-    >
+    <div className="flex overflow-hidden transition-all duration-300">
       {/* Left Column: Form Fields */}
       <form onSubmit={handleSubmit} className="flex-1 p-4 space-y-3 min-w-[280px]">
-        <div className="flex items-center justify-between text-xs font-semibold pb-1 border-b border-dashed" style={{ color: 'var(--ds-text-secondary)', borderColor: 'var(--ds-border)' }}>
-          <span>{initial ? '编辑系统预设' : '新建系统预设'}</span>
-        </div>
         <input
           type="text"
           placeholder="预设名称（如：代码助手、翻译专家）"
@@ -111,10 +102,11 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
         />
 
         <div>
-          <label className="text-[11px] mb-1.5 block font-medium" style={{ color: 'var(--ds-text-tertiary)' }}>
+          <label htmlFor="preset-content" className="text-[11px] mb-1.5 block font-medium" style={{ color: 'var(--ds-text-tertiary)' }}>
             系统提示词内容
           </label>
           <textarea
+            id="preset-content"
             rows={12}
             placeholder={"你是一位专业的...\\n\\n## 核心原则\\n- ..."}
             value={content}
@@ -233,10 +225,11 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
                 const isSelected = m.id !== undefined && selectedMemoryIds.includes(m.id);
                 const typeInfo = MEMORY_TYPE_MAP[m.type] ?? MEMORY_TYPE_MAP.topic;
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={m.id}
                     onClick={() => m.id !== undefined && toggleMemory(m.id)}
-                    className="p-2.5 rounded-lg border cursor-pointer transition-all duration-150 select-none flex flex-col gap-1"
+                    className="w-full text-left p-2.5 rounded-lg border cursor-pointer transition-all duration-150 select-none flex flex-col gap-1"
                     style={{
                       borderWidth: '1px',
                       borderColor: isSelected ? 'var(--ds-blue)' : 'var(--ds-border)',
@@ -261,7 +254,7 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
                     <p className="text-[10px] line-clamp-2 leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
                       {m.content}
                     </p>
-                  </div>
+                  </button>
                 );
               })
             )}

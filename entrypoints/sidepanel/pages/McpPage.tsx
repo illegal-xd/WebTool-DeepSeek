@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { McpServerConfig, McpServerCreateInput, McpToolCacheEntry, ToolCallHistoryRecord, ToolExecutionMode } from '../../../core/types';
+import SidepanelModal from '../components/SidepanelModal';
 
 type TransportKind = McpServerCreateInput['transport']['kind'];
 
@@ -99,19 +100,6 @@ export default function McpPage() {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [load]);
 
-  useEffect(() => {
-    const mainEl = document.querySelector('main');
-    if (!mainEl) return;
-    if (showForm) {
-      mainEl.style.overflowY = 'hidden';
-    } else {
-      mainEl.style.overflowY = 'auto';
-    }
-    return () => {
-      mainEl.style.overflowY = 'auto';
-    };
-  }, [showForm]);
-
   const startCreate = () => {
     setEditing(null);
     setForm(DEFAULT_FORM);
@@ -204,7 +192,10 @@ export default function McpPage() {
               {servers.length} 个服务 · {totalTools} 个已发现工具
             </p>
           </div>
-          <button type="button" className="ds-btn-primary text-white rounded-xl px-3 py-2 text-[13px] font-medium" onClick={startCreate}>
+          <button type="button" className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1 shrink-0" onClick={startCreate}>
+            <svg aria-hidden="true" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
             新增服务
           </button>
         </div>
@@ -212,24 +203,8 @@ export default function McpPage() {
       </section>
 
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button type="button" aria-label="关闭 MCP 服务弹窗" className="absolute inset-0 bg-black/40" onClick={() => setShowForm(false)} />
-          <div className="relative w-full max-w-2xl animate-slide-down">
-            <section className="ds-form rounded-2xl p-4 space-y-3 shadow-lg">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-[15px] font-semibold" style={{ color: 'var(--ds-text)' }}>
-                    {editing ? '编辑 MCP 服务' : '新增 MCP 服务'}
-                  </h3>
-                  {/* <p className="text-[12px] mt-1" style={{ color: 'var(--ds-text-secondary)' }}>
-                    参考 Skill 分栏的遮罩层弹窗交互
-                  </p> */}
-                </div>
-                {/* <button type="button" className="ds-btn-cancel rounded-lg px-2.5 py-1.5 text-[12px]" onClick={() => setShowForm(false)}>
-                  关闭
-                </button> */}
-              </div>
-
+        <SidepanelModal open={showForm} title={editing ? '编辑 MCP 服务' : '新增 MCP 服务'} maxWidth="lg" onClose={() => setShowForm(false)}>
+            <section className="p-4 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <label className="text-[12px] col-span-2" style={{ color: 'var(--ds-text-secondary)' }}>
                   名称
@@ -269,13 +244,12 @@ export default function McpPage() {
               <label className="flex items-center gap-2 text-[13px]" style={{ color: 'var(--ds-text-secondary)' }}>
                 <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /> 启用服务
               </label>
-              <div className="flex gap-2 justify-end">
-                <button type="button" className="ds-btn-cancel rounded-xl px-3 py-2 text-[13px]" onClick={() => setShowForm(false)}>取消</button>
-                <button type="button" className="ds-btn-primary text-white rounded-xl px-3 py-2 text-[13px]" onClick={save}>保存</button>
+              <div className="flex gap-2 justify-end pt-1">
+                <button type="button" className="ds-btn-cancel px-3.5 py-1.5 text-xs font-medium rounded-lg transition-all duration-150" onClick={() => setShowForm(false)}>取消</button>
+                <button type="button" className="ds-btn-primary px-4 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150" onClick={save}>保存</button>
               </div>
             </section>
-          </div>
-        </div>
+        </SidepanelModal>
       )}
 
       <section className="grid grid-cols-[145px_1fr] gap-3 min-h-[420px]">
@@ -307,10 +281,10 @@ export default function McpPage() {
               </div>
 
               <div className="flex gap-2">
-                <button type="button" className="ds-btn-primary text-white rounded-xl px-3 py-2 text-[12px]" disabled={busyId === selected.id} onClick={() => void refresh(selected)}>
+                <button type="button" className="ds-btn-primary px-4 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150" disabled={busyId === selected.id} onClick={() => void refresh(selected)}>
                   {busyId === selected.id ? '刷新中...' : '发现工具'}
                 </button>
-                <button type="button" className="ds-btn-secondary rounded-xl px-3 py-2 text-[12px]" disabled={busyId === selected.id} onClick={() => void refresh(selected, true)}>测试连接</button>
+                <button type="button" className="ds-btn-cancel px-3.5 py-1.5 text-xs font-medium rounded-lg transition-all duration-150" disabled={busyId === selected.id} onClick={() => void refresh(selected, true)}>测试连接</button>
               </div>
 
               <div>

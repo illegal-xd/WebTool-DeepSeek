@@ -28,10 +28,7 @@ export default function MemoryForm({ initial, onSave, onCancel }: Props) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="ds-form rounded-xl p-4 space-y-3">
-      <div className="flex items-center justify-between text-xs font-semibold pb-1 border-b border-dashed" style={{ color: 'var(--ds-text-secondary)', borderColor: 'var(--ds-border)' }}>
-        <span>{initial ? '编辑记忆' : '新增记忆'}</span>
-      </div>
+    <form onSubmit={handleSubmit} className="p-4 space-y-3">
       <div className="flex gap-1.5">
         {MEMORY_TYPE_CONFIG.map((t) => (
           <button
