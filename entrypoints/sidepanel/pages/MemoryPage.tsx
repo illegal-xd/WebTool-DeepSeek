@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Memory, MemoryType, NewMemory } from '../../../core/types';
 import { memoryWeight } from '../../../core/weighting';
 import MemoryCard from '../components/MemoryCard';
@@ -11,9 +11,19 @@ const FILTER_TYPES: { key: MemoryType | 'all'; label: string }[] = [
   ...MEMORY_TYPE_CONFIG.map((t) => ({ key: t.key, label: t.label })),
 ];
 
+type MemorySortKey = 'recentlyUpdated' | 'highestWeight' | 'mostUsed';
+
+const SORT_OPTIONS: { key: MemorySortKey; label: string }[] = [
+  { key: 'recentlyUpdated', label: '按最近更新' },
+  { key: 'highestWeight', label: '按最高权重' },
+  { key: 'mostUsed', label: '按最多使用' },
+];
+
 export default function MemoryPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [filter, setFilter] = useState<MemoryType | 'all'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortKey, setSortKey] = useState<MemorySortKey>('recentlyUpdated');
   const [showForm, setShowForm] = useState(false);
   const [editingMemory, setEditingMemory] = useState<Memory | null>(null);
 
@@ -35,12 +45,41 @@ export default function MemoryPage() {
     return () => chrome.runtime.onMessage.removeListener(handler);
   }, [load]);
 
-  const filtered = (filter === 'all' ? memories : memories.filter((m) => m.type === filter))
-    .toSorted((a, b) => (
-      memoryWeight(b) - memoryWeight(a) ||
-      b.lastAccessedAt - a.lastAccessedAt ||
-      a.name.localeCompare(b.name)
-    ));
+  const filtered = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase();
+    return memories
+      .filter((memory) => {
+        if (filter !== 'all' && memory.type !== filter) return false;
+        if (!keyword) return true;
+        return (
+          memory.name.toLowerCase().includes(keyword) ||
+          memory.tags.some((tag) => tag.toLowerCase().includes(keyword))
+        );
+      })
+      .toSorted((a, b) => {
+        if (sortKey === 'highestWeight') {
+          return (
+            memoryWeight(b) - memoryWeight(a) ||
+            b.updatedAt - a.updatedAt ||
+            a.name.localeCompare(b.name)
+          );
+        }
+
+        if (sortKey === 'mostUsed') {
+          return (
+            b.accessCount - a.accessCount ||
+            b.lastAccessedAt - a.lastAccessedAt ||
+            a.name.localeCompare(b.name)
+          );
+        }
+
+        return (
+          b.updatedAt - a.updatedAt ||
+          memoryWeight(b) - memoryWeight(a) ||
+          a.name.localeCompare(b.name)
+        );
+      });
+  }, [filter, memories, searchQuery, sortKey]);
 
   const handleDelete = async (id: number) => {
     if (editingMemory?.id === id) {
@@ -86,7 +125,7 @@ export default function MemoryPage() {
   return (
     <div className="p-4 space-y-3">
       <div
-        className="sticky top-0 z-10 flex items-center justify-between border-b"
+        className="sticky top-0 z-10 space-y-3 border-b"
         style={{
           backgroundColor: 'var(--ds-bg)',
           borderColor: 'var(--ds-border)',
@@ -94,34 +133,59 @@ export default function MemoryPage() {
           padding: '12px 16px',
         }}
       >
-        <div className="flex gap-1.5 flex-wrap">
-          {FILTER_TYPES.map((t) => (
-            <button
-              type="button"
-              key={t.key}
-              onClick={() => setFilter(t.key)}
-              className="px-2.5 py-1 text-xs rounded-full transition-all duration-150"
-              style={{
-                background: filter === t.key ? 'var(--ds-blue-light)' : 'var(--ds-surface)',
-                color: filter === t.key ? 'var(--ds-blue)' : 'var(--ds-text-secondary)',
-                fontWeight: filter === t.key ? 500 : 400,
-                border: `1px solid ${filter === t.key ? 'rgba(77,107,254,0.2)' : 'var(--ds-border)'}`,
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex gap-1.5 flex-wrap">
+            {FILTER_TYPES.map((t) => (
+              <button
+                type="button"
+                key={t.key}
+                onClick={() => setFilter(t.key)}
+                className="px-2.5 py-1 text-xs rounded-full transition-all duration-150"
+                style={{
+                  background: filter === t.key ? 'var(--ds-blue-light)' : 'var(--ds-surface)',
+                  color: filter === t.key ? 'var(--ds-blue)' : 'var(--ds-text-secondary)',
+                  fontWeight: filter === t.key ? 500 : 400,
+                  border: `1px solid ${filter === t.key ? 'rgba(77,107,254,0.2)' : 'var(--ds-border)'}`,
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => { setEditingMemory(null); setShowForm(!showForm); }}
+            className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1 shrink-0"
+          >
+            <svg aria-hidden="true" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            新增
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => { setEditingMemory(null); setShowForm(!showForm); }}
-          className="ds-btn-primary px-3 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150 flex items-center gap-1 shrink-0"
-        >
-          <svg aria-hidden="true" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-          </svg>
-          新增
-        </button>
+        <div className="flex gap-2 items-center">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="搜索记忆名称或标签..."
+            className="min-w-0 flex-1 px-3 py-2 text-xs rounded-lg border outline-none transition-colors focus:border-[var(--ds-blue)]"
+            style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
+          />
+          <select
+            value={sortKey}
+            onChange={(event) => setSortKey(event.target.value as MemorySortKey)}
+            className="shrink-0 px-3 py-2 text-xs rounded-lg border outline-none transition-colors focus:border-[var(--ds-blue)]"
+            style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
+            aria-label="排序方式"
+          >
+            {SORT_OPTIONS.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <SidepanelModal open={showForm} title={editingMemory ? '编辑记忆' : '新增记忆'} onClose={handleCancel}>
@@ -139,7 +203,7 @@ export default function MemoryPage() {
             🧠
           </div>
           <p className="text-sm" style={{ color: 'var(--ds-text-tertiary)' }}>
-            {memories.length === 0 ? '暂无记忆，对话时会自动积累' : '该分类下暂无记忆'}
+            {memories.length === 0 ? '暂无记忆，对话时会自动积累' : '未找到匹配的记忆'}
           </p>
         </div>
       ) : (

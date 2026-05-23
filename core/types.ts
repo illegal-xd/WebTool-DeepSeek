@@ -215,7 +215,7 @@ export type MessageAction =
   | { type: 'SET_MODEL_TYPE'; payload: ModelType }
   | { type: 'TOUCH_USAGE'; payload: { kind: 'memory'; id: number } | { kind: 'skill'; name: string } | { kind: 'preset'; id: string } }
   | { type: 'TOOL_CALL_EXECUTED'; payload: ToolCall }
-  | { type: 'GET_MCP_SERVERS' }
+  | { type: 'GET_MCP_SERVERS'; payload?: { includeSecrets?: boolean } }
   | { type: 'GET_MCP_SERVER'; payload: { id: McpServerId } }
   | { type: 'CREATE_MCP_SERVER'; payload: McpServerCreateInput }
   | { type: 'UPDATE_MCP_SERVER'; payload: { id: McpServerId; patch: McpServerUpdateInput } }
@@ -237,7 +237,7 @@ export type MessageAction =
   | { type: 'GET_BACKGROUND' }
   | { type: 'SAVE_BACKGROUND'; payload: BackgroundConfig }
   | { type: 'CLEAR_BACKGROUND' }
-  | { type: 'LIST_SESSIONS' }
+  | { type: 'LIST_SESSIONS'; payload?: { forceRefresh?: boolean } }
   | { type: 'DELETE_SESSION'; payload: { id: string } }
   | { type: 'DELETE_SESSIONS'; payload: { ids: string[] } }
   | { type: 'RENAME_SESSION'; payload: { id: string; title: string } }

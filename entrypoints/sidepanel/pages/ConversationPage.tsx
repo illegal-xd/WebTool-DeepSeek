@@ -117,12 +117,12 @@ export default function ConversationPage() {
   const [editingTitle, setEditingTitle] = useState('');
   const [renameTemplate, setRenameTemplate] = useState('{title}-{idx}');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options?: { forceRefresh?: boolean }) => {
     setLoading(true);
     setStatus('');
     try {
       const [sessionList, categoryList] = await Promise.all([
-        chrome.runtime.sendMessage({ type: 'LIST_SESSIONS' }),
+        chrome.runtime.sendMessage({ type: 'LIST_SESSIONS', payload: { forceRefresh: options?.forceRefresh === true } }),
         chrome.runtime.sendMessage({ type: 'GET_CONVERSATION_CATEGORIES' }),
       ]);
       setSessions(mergeSessions([], sessionList ?? []));
@@ -290,7 +290,7 @@ export default function ConversationPage() {
       <div className="sticky top-0 z-10 space-y-3 border-b" style={{ backgroundColor: 'var(--ds-bg)', borderColor: 'var(--ds-border)', margin: '-16px -16px 8px -16px', padding: '12px 16px' }}>
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>对话管理</h2>
-          <button type="button" onClick={load} disabled={loading} className="ds-btn-secondary px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 disabled:opacity-40">
+          <button type="button" onClick={() => load({ forceRefresh: true })} disabled={loading} className="ds-btn-secondary px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 disabled:opacity-40">
             {loading ? '加载中' : '刷新'}
           </button>
         </div>

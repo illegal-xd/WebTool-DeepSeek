@@ -56,7 +56,7 @@ export default function MemoryCard({ memory, onDelete, onEdit, onTogglePin }: Pr
         </div>
       </div>
 
-      <p className="text-xs mt-2 line-clamp-3 leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
+      <p className="text-xs mt-2 line-clamp-2 leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
         {memory.content}
       </p>
 

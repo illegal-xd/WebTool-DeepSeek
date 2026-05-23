@@ -47,6 +47,13 @@ import {
 import type { BackgroundConfig, ConversationCategory, ConversationMessage, ConversationSession, McpServerCreateInput, McpServerUpdateInput, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset, ToolCall } from '../core/types';
 
 const NEW_CHAT_URL = 'https://chat.deepseek.com/a/chat';
+const CONVERSATION_SESSION_CACHE_KEY = 'webtool_deepseek_conversation_session_cache';
+
+type ConversationSessionCache = {
+  date: string;
+  sessions: ConversationSession[];
+  updatedAt: number;
+};
 
 export default defineBackground(() => {
   chrome.sidePanel
@@ -163,8 +170,10 @@ async function handleMessage(
     case 'GET_ACTIVE_PRESET':
       return getActivePreset();
 
-    case 'GET_MCP_SERVERS':
-      return getAllMcpServers();
+    case 'GET_MCP_SERVERS': {
+      const options = message.payload as { includeSecrets?: boolean } | undefined;
+      return getAllMcpServers({ includeSecrets: options?.includeSecrets === true });
+    }
 
     case 'GET_MCP_SERVER': {
       const { id } = message.payload as { id: string };
@@ -292,8 +301,9 @@ async function handleMessage(
     }
 
     case 'LIST_SESSIONS': {
+      const forceRefresh = (message.payload as { forceRefresh?: boolean } | undefined)?.forceRefresh === true;
       const [sessions, categories] = await Promise.all([
-        sendDeepSeekTabMessage<ConversationSession[]>({ type: 'DS_LIST_SESSIONS' }),
+        getCachedConversationSessions(forceRefresh),
         getConversationCategories(),
       ]);
       return attachCategoryIds(sessions, categories);
@@ -451,6 +461,36 @@ async function refreshDeepSeekTab() {
   if (!target?.id) return;
 
   await chrome.tabs.reload(target.id, { bypassCache: true });
+}
+
+async function getCachedConversationSessions(forceRefresh: boolean): Promise<ConversationSession[]> {
+  const today = getConversationCacheDateKey();
+  const cache = await readConversationSessionCache();
+  if (!forceRefresh && cache?.date === today && cache.sessions.length > 0) {
+    return cache.sessions;
+  }
+
+  const sessions = await sendDeepSeekTabMessage<ConversationSession[]>({ type: 'DS_LIST_SESSIONS' });
+  const nextCache: ConversationSessionCache = { date: today, sessions: sessions ?? [], updatedAt: Date.now() };
+  await chrome.storage.session.set({ [CONVERSATION_SESSION_CACHE_KEY]: nextCache });
+  return nextCache.sessions;
+}
+
+function getConversationCacheDateKey(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+async function readConversationSessionCache(): Promise<ConversationSessionCache | null> {
+  const data = await chrome.storage.session.get(CONVERSATION_SESSION_CACHE_KEY) as Record<string, unknown>;
+  const raw = data[CONVERSATION_SESSION_CACHE_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Partial<ConversationSessionCache>;
+  if (typeof value.date !== 'string' || !Array.isArray(value.sessions)) return null;
+  return {
+    date: value.date,
+    sessions: value.sessions.filter((item): item is ConversationSession => Boolean(item) && typeof item === 'object' && typeof (item as ConversationSession).id === 'string'),
+    updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
+  };
 }
 
 async function broadcastToTabs(payload: Record<string, unknown>, excludeTabId?: number) {

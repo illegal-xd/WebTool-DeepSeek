@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BackgroundConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
+import type { BackgroundConfig, McpServerConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
 import { useTheme } from '../../../hooks/useTheme';
 import type { ThemePreference } from '../../../lib/ThemeContext';
 import { SVG_PATHS } from '../constants';
@@ -13,12 +13,13 @@ const DEFAULT_SYNC_CONFIG: SyncConfig = {
 };
 
 type SyncStatus = 'idle' | 'testing' | 'syncing' | 'success' | 'error';
-type BackupDataType = 'memories' | 'skills' | 'presets';
+type BackupDataType = 'memories' | 'skills' | 'presets' | 'mcpServers';
 
-const BACKUP_OPTIONS: { key: BackupDataType; label: string; getCount: (counts: { memories: number; skills: number; presets: number }) => number }[] = [
+const BACKUP_OPTIONS: { key: BackupDataType; label: string; getCount: (counts: { memories: number; skills: number; presets: number; mcpServers: number }) => number }[] = [
   { key: 'memories', label: '记忆', getCount: (counts) => counts.memories },
   { key: 'skills', label: 'Skill', getCount: (counts) => counts.skills },
   { key: 'presets', label: '预设', getCount: (counts) => counts.presets },
+  { key: 'mcpServers', label: 'MCP', getCount: (counts) => counts.mcpServers },
 ];
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
@@ -30,25 +31,28 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
 type BackupSelection = Record<BackupDataType, boolean>;
 
 interface BackupPayload {
-  type: 'deepseek_pp_backup';
+  type: 'webtool-deepseek_backup';
   version: string;
   exportedAt: number;
   includes: BackupSelection;
   memories?: Memory[];
   skills?: Skill[];
   presets?: SystemPromptPreset[];
+  mcpServers?: McpServerConfig[];
 }
 
 interface ParsedBackupData {
   memories: Memory[];
   skills: Skill[];
   presets: SystemPromptPreset[];
+  mcpServers: McpServerConfig[];
 }
 
 const DEFAULT_BACKUP_SELECTION: BackupSelection = {
   memories: true,
   skills: true,
   presets: true,
+  mcpServers: true,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,14 +66,15 @@ function arrayFromRecord<T>(record: Record<string, unknown>, key: string): T[] {
 
 function parseBackupData(parsed: unknown): ParsedBackupData {
   if (Array.isArray(parsed)) {
-    return { memories: parsed as Memory[], skills: [], presets: [] };
+    return { memories: parsed as Memory[], skills: [], presets: [], mcpServers: [] };
   }
 
-  if (isRecord(parsed) && parsed.type === 'deepseek_pp_backup') {
+  if (isRecord(parsed) && parsed.type === 'webtool-deepseek_backup') {
     return {
       memories: arrayFromRecord<Memory>(parsed, 'memories'),
       skills: arrayFromRecord<Skill>(parsed, 'skills'),
       presets: arrayFromRecord<SystemPromptPreset>(parsed, 'presets'),
+      mcpServers: arrayFromRecord<McpServerConfig>(parsed, 'mcpServers'),
     };
   }
 
@@ -92,6 +97,7 @@ export default function SettingsPage() {
   const [memoryCount, setMemoryCount] = useState(0);
   const [customSkillCount, setCustomSkillCount] = useState(0);
   const [presetCount, setPresetCount] = useState(0);
+  const [mcpServerCount, setMcpServerCount] = useState(0);
   const [version, setVersion] = useState('');
   const [syncConfig, setSyncConfig] = useState<SyncConfig>(DEFAULT_SYNC_CONFIG);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
@@ -119,6 +125,9 @@ export default function SettingsPage() {
 
     const presets: SystemPromptPreset[] = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
     setPresetCount(presets?.length ?? 0);
+
+    const mcpServers: McpServerConfig[] = await chrome.runtime.sendMessage({ type: 'GET_MCP_SERVERS' });
+    setMcpServerCount(mcpServers?.length ?? 0);
   };
 
   useEffect(() => {
@@ -299,8 +308,8 @@ export default function SettingsPage() {
     }
 
     const exportData: BackupPayload = {
-      type: 'deepseek_pp_backup',
-      version: '1.1.0',
+      type: 'webtool-deepseek_backup',
+      version: '0.5.1',
       exportedAt: Date.now(),
       includes: backupSelection,
     };
@@ -314,6 +323,9 @@ export default function SettingsPage() {
     }
     if (backupSelection.presets) {
       exportData.presets = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
+    }
+    if (backupSelection.mcpServers) {
+      exportData.mcpServers = await chrome.runtime.sendMessage({ type: 'GET_MCP_SERVERS', payload: { includeSecrets: true } });
     }
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -361,7 +373,17 @@ export default function SettingsPage() {
           await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
         }
 
-        alert(`导入成功：记忆 ${parsed.memories.length} 条，Skill ${parsed.skills.length} 个，预设 ${parsed.presets.length} 个`);
+        const existingMcpServers: McpServerConfig[] = await chrome.runtime.sendMessage({ type: 'GET_MCP_SERVERS', payload: { includeSecrets: true } });
+        const existingMcpById = new Map((existingMcpServers ?? []).map((server) => [server.id, server]));
+        for (const server of parsed.mcpServers) {
+          if (existingMcpById.has(server.id)) {
+            await chrome.runtime.sendMessage({ type: 'UPDATE_MCP_SERVER', payload: { id: server.id, patch: server } });
+          } else {
+            await chrome.runtime.sendMessage({ type: 'CREATE_MCP_SERVER', payload: server });
+          }
+        }
+
+        alert(`导入成功：记忆 ${parsed.memories.length} 条，Skill ${parsed.skills.length} 个，预设 ${parsed.presets.length} 个，MCP ${parsed.mcpServers.length} 个`);
         loadCounts();
       } catch (e) {
         alert('导入失败: ' + (e as Error).message);
@@ -430,7 +452,7 @@ export default function SettingsPage() {
             </p>
           </div>
         </div>
-        <div className="ds-surface-panel rounded-xl p-2">
+        <div className="ds-surface-panel rounded-xl p-2 space-y-3">
           <div className="grid grid-cols-3 gap-1.5">
             {THEME_OPTIONS.map((option) => {
               const active = theme === option.value;
@@ -451,6 +473,142 @@ export default function SettingsPage() {
                 </button>
               );
             })}
+          </div>
+
+          <div className="border-t pt-3 space-y-3" style={{ borderColor: 'var(--ds-border)' }}>
+            <div className="flex justify-between items-center px-2">
+              <div>
+                <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                  自定义背景
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                  为 DeepSeek 页面设置背景图片
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleBgToggle(!bgEnabled)}
+                aria-pressed={bgEnabled}
+                aria-label="切换自定义背景"
+                className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
+                style={{
+                  background: bgEnabled ? 'var(--ds-blue)' : 'var(--ds-border)',
+                }}
+              >
+                <span
+                  className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                  style={{
+                    transform: bgEnabled ? 'translateX(18px)' : 'translateX(0)',
+                  }}
+                />
+              </button>
+            </div>
+
+            {bgEnabled && (
+              <div className="space-y-3 px-2">
+                <div className="flex gap-2">
+                  <input
+                    id="custom-background-file"
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleFileSelect}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="ds-btn-secondary flex-1 py-2 text-[11px] font-medium rounded-lg transition-all duration-150 flex items-center justify-center gap-1.5"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" d={SVG_PATHS.upload} />
+                    </svg>
+                    上传图片
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    id="custom-background-url"
+                    type="url"
+                    placeholder="粘贴图片 URL"
+                    value={bgUrl}
+                    onChange={(e) => setBgUrl(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleUrlConfirm()}
+                    className={inputClass}
+                    style={inputStyle}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleUrlConfirm}
+                    disabled={!bgUrl.trim()}
+                    className="ds-btn-secondary shrink-0 px-3 py-2 text-[11px] font-medium rounded-lg transition-all duration-150 disabled:opacity-40"
+                  >
+                    确认
+                  </button>
+                </div>
+
+                {bgPreview && (
+                  <div
+                    className="relative rounded-lg overflow-hidden border"
+                    style={{ borderColor: 'var(--ds-border)', height: '120px' }}
+                  >
+                    <img
+                      src={bgPreview}
+                      alt="背景预览"
+                      className="w-full h-full object-cover"
+                      onError={() => { setBgUrl(''); setBgImageData(''); }}
+                    />
+                    <div
+                      className="absolute inset-0 flex items-center justify-center text-[10px]"
+                      style={{
+                        background: `rgba(255,255,255,${(1 - bgOpacity).toFixed(3)})`,
+                        backdropFilter: `blur(${((1 - bgOpacity) * 8).toFixed(1)}px)`,
+                        WebkitBackdropFilter: `blur(${((1 - bgOpacity) * 8).toFixed(1)}px)`,
+                        color: 'var(--ds-text-secondary)',
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      模拟效果预览
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div className="flex justify-between items-center mb-1.5">
+                    <label htmlFor="custom-background-opacity" className="text-[11px]" style={{ color: 'var(--ds-text-secondary)' }}>
+                      背景透明度
+                    </label>
+                    <span className="text-[11px] font-mono" style={{ color: 'var(--ds-text-tertiary)' }}>
+                      {bgOpacity.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    id="custom-background-opacity"
+                    type="range"
+                    min="0.05"
+                    max="1"
+                    step="0.05"
+                    value={bgOpacity}
+                    onChange={(e) => handleOpacityChange(parseFloat(e.target.value))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                    style={{
+                      background: `linear-gradient(to right, var(--ds-blue) ${bgOpacity * 100}%, var(--ds-border) ${bgOpacity * 100}%)`,
+                    }}
+                  />
+                </div>
+
+                {bgPreview && (
+                  <button
+                    type="button"
+                    onClick={handleClearBg}
+                    className="ds-btn-danger w-full py-2 text-[11px] font-medium rounded-lg transition-all duration-150"
+                  >
+                    清除背景
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -485,136 +643,6 @@ export default function SettingsPage() {
               />
             </button>
           </div>
-        </div>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
-          背景设置
-        </h2>
-
-        <div className="ds-surface-panel rounded-xl p-4 space-y-3">
-          <div className="flex justify-between items-center">
-            <div>
-              <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
-                自定义背景
-              </div>
-              <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
-                为 DeepSeek 页面设置背景图片
-              </div>
-            </div>
-            <button
-              onClick={() => handleBgToggle(!bgEnabled)}
-              disabled={!bgPreview}
-              className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200 disabled:opacity-40"
-              style={{
-                background: bgEnabled && bgPreview ? 'var(--ds-blue)' : 'var(--ds-border)',
-              }}
-            >
-              <span
-                className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
-                style={{
-                  transform: bgEnabled && bgPreview ? 'translateX(18px)' : 'translateX(0)',
-                }}
-              />
-            </button>
-          </div>
-
-          <div className="flex gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleFileSelect}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="ds-btn-secondary flex-1 py-2 text-[11px] font-medium rounded-lg transition-all duration-150 flex items-center justify-center gap-1.5"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d={SVG_PATHS.upload} />
-              </svg>
-              上传图片
-            </button>
-          </div>
-
-          <div className="flex gap-2">
-            <input
-              type="url"
-              placeholder="粘贴图片 URL"
-              value={bgUrl}
-              onChange={(e) => setBgUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleUrlConfirm()}
-              className={inputClass}
-              style={inputStyle}
-            />
-            <button
-              onClick={handleUrlConfirm}
-              disabled={!bgUrl.trim()}
-              className="ds-btn-secondary shrink-0 px-3 py-2 text-[11px] font-medium rounded-lg transition-all duration-150 disabled:opacity-40"
-            >
-              确认
-            </button>
-          </div>
-
-          {bgPreview && (
-            <div
-              className="relative rounded-lg overflow-hidden border"
-              style={{ borderColor: 'var(--ds-border)', height: '120px' }}
-            >
-              <img
-                src={bgPreview}
-                alt="背景预览"
-                className="w-full h-full object-cover"
-                onError={() => { setBgUrl(''); setBgImageData(''); }}
-              />
-              <div
-                className="absolute inset-0 flex items-center justify-center text-[10px]"
-                style={{
-                  background: `rgba(255,255,255,${(1 - bgOpacity).toFixed(3)})`,
-                  backdropFilter: `blur(${((1 - bgOpacity) * 8).toFixed(1)}px)`,
-                  WebkitBackdropFilter: `blur(${((1 - bgOpacity) * 8).toFixed(1)}px)`,
-                  color: 'var(--ds-text-secondary)',
-                  pointerEvents: 'none',
-                }}
-              >
-                模拟效果预览
-              </div>
-            </div>
-          )}
-
-          <div>
-            <div className="flex justify-between items-center mb-1.5">
-              <label className="text-[11px]" style={{ color: 'var(--ds-text-secondary)' }}>
-                背景透明度
-              </label>
-              <span className="text-[11px] font-mono" style={{ color: 'var(--ds-text-tertiary)' }}>
-                {bgOpacity.toFixed(2)}
-              </span>
-            </div>
-            <input
-              type="range"
-              min="0.05"
-              max="1"
-              step="0.05"
-              value={bgOpacity}
-              onChange={(e) => handleOpacityChange(parseFloat(e.target.value))}
-              className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
-              style={{
-                background: `linear-gradient(to right, var(--ds-blue) ${bgOpacity * 100}%, var(--ds-border) ${bgOpacity * 100}%)`,
-              }}
-            />
-          </div>
-
-          {bgPreview && (
-            <button
-              onClick={handleClearBg}
-              className="ds-btn-danger w-full py-2 text-[11px] font-medium rounded-lg transition-all duration-150"
-            >
-              清除背景
-            </button>
-          )}
         </div>
       </section>
 
@@ -769,10 +797,10 @@ export default function SettingsPage() {
           <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
             导出数据选择
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             {BACKUP_OPTIONS.map((option) => {
               const selected = backupSelection[option.key];
-              const count = option.getCount({ memories: memoryCount, skills: customSkillCount, presets: presetCount });
+              const count = option.getCount({ memories: memoryCount, skills: customSkillCount, presets: presetCount, mcpServers: mcpServerCount });
               return (
                 <button
                   key={option.key}
