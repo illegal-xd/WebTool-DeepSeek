@@ -222,5 +222,5 @@ input::placeholder, textarea::placeholder {
 /* Info panel */
 .ds-info-panel {
   background: var(--ds-blue-light);
-  border: 1px solid rgba(77, 107, 254, 0.1);
+  border: 1px solid var(--ds-status-info-border);
 }

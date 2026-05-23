@@ -156,7 +156,7 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
 
       {/* Right Column: Memory Selector (only shown if memoryEnabled is true) */}
       {memoryEnabled && (
-        <div className="w-[320px] border-l flex flex-col p-4 bg-gray-50/50 dark:bg-zinc-900/10" style={{ borderColor: 'var(--ds-border)' }}>
+        <div className="w-[320px] border-l flex flex-col p-4" style={{ background: 'var(--ds-surface-muted)', borderColor: 'var(--ds-border)' }}>
           <div className="flex items-center justify-between text-xs font-semibold pb-1 border-b border-dashed mb-3" style={{ color: 'var(--ds-text-secondary)', borderColor: 'var(--ds-border)' }}>
             <span>选择要注入的记忆 ({selectedMemoryIds.length}/{memories.length})</span>
             {filteredMemories.length > 0 && (
@@ -168,7 +168,7 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
                   style={{
                     color: 'var(--ds-blue)',
                     background: 'var(--ds-blue-light)',
-                    borderColor: 'rgba(77, 107, 254, 0.25)',
+                    borderColor: 'var(--ds-border-focus)',
                   }}
                 >
                   全选
@@ -207,7 +207,7 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
                 style={{
                   background: filter === t.key ? 'var(--ds-blue-light)' : 'var(--ds-surface)',
                   color: filter === t.key ? 'var(--ds-blue)' : 'var(--ds-text-secondary)',
-                  borderColor: filter === t.key ? 'rgba(77,107,254,0.2)' : 'var(--ds-border)',
+                  borderColor: filter === t.key ? 'var(--ds-border-focus)' : 'var(--ds-border)',
                 }}
               >
                 {t.label}

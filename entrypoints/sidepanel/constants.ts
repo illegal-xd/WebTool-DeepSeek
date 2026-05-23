@@ -7,10 +7,10 @@ export const MEMORY_TYPE_CONFIG: {
   bg: string;
   border: string;
 }[] = [
-  { key: 'user', label: '用户', color: '#3B82F6', bg: '#EFF6FF', border: '#BFDBFE' },
-  { key: 'feedback', label: '反馈', color: '#F59E0B', bg: '#FFFBEB', border: '#FDE68A' },
-  { key: 'topic', label: '话题', color: '#8B5CF6', bg: '#F5F3FF', border: '#DDD6FE' },
-  { key: 'reference', label: '参考', color: '#10B981', bg: '#ECFDF5', border: '#A7F3D0' },
+  { key: 'user', label: '用户', color: 'var(--ds-badge-user)', bg: 'var(--ds-badge-user-bg)', border: 'var(--ds-badge-user-border)' },
+  { key: 'feedback', label: '反馈', color: 'var(--ds-badge-feedback)', bg: 'var(--ds-badge-feedback-bg)', border: 'var(--ds-badge-feedback-border)' },
+  { key: 'topic', label: '话题', color: 'var(--ds-badge-topic)', bg: 'var(--ds-badge-topic-bg)', border: 'var(--ds-badge-topic-border)' },
+  { key: 'reference', label: '参考', color: 'var(--ds-badge-reference)', bg: 'var(--ds-badge-reference-bg)', border: 'var(--ds-badge-reference-border)' },
 ];
 
 export const MEMORY_TYPE_MAP = Object.fromEntries(

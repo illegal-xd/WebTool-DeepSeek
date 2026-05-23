@@ -261,7 +261,7 @@ async function handleMessage(
     }
 
     case 'GET_CONFIG':
-      return { version: '0.5.0' };
+      return { version: '0.5.1' };
 
     case 'GET_MODEL_TYPE':
       return getModelType();

@@ -4,7 +4,7 @@ export type ThemePreference = 'system' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';
 
 interface ThemeContextValue {
-  preference: ThemePreference;
+  theme: ThemePreference;
   resolvedTheme: ResolvedTheme;
   setTheme: (theme: ThemePreference) => void;
   toggleTheme: () => void;
@@ -12,7 +12,7 @@ interface ThemeContextValue {
 
 export const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-const STORAGE_KEY = 'webtool-deepseek-theme';
+const STORAGE_KEY = 'webtool-theme';
 const THEME_QUERY = '(prefers-color-scheme: dark)';
 
 function isThemePreference(value: string | null): value is ThemePreference {
@@ -43,9 +43,9 @@ function applyTheme(preference: ThemePreference, resolvedTheme: ResolvedTheme) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [preference, setPreference] = useState<ThemePreference>(() => getStoredPreference());
+  const [theme, setThemePreference] = useState<ThemePreference>(() => getStoredPreference());
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => getSystemTheme());
-  const resolvedTheme = resolveTheme(preference, systemTheme);
+  const resolvedTheme = resolveTheme(theme, systemTheme);
 
   useEffect(() => {
     const media = window.matchMedia(THEME_QUERY);
@@ -59,27 +59,27 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    applyTheme(preference, resolvedTheme);
-    window.localStorage.setItem(STORAGE_KEY, preference);
-  }, [preference, resolvedTheme]);
+    applyTheme(theme, resolvedTheme);
+    window.localStorage.setItem(STORAGE_KEY, theme);
+  }, [theme, resolvedTheme]);
 
-  const setTheme = useCallback((theme: ThemePreference) => {
-    setPreference(theme);
+  const setTheme = useCallback((nextTheme: ThemePreference) => {
+    setThemePreference(nextTheme);
   }, []);
 
   const toggleTheme = useCallback(() => {
-    setPreference((current) => {
+    setThemePreference((current) => {
       const currentResolved = resolveTheme(current, getSystemTheme());
       return currentResolved === 'dark' ? 'light' : 'dark';
     });
   }, []);
 
   const value = useMemo<ThemeContextValue>(() => ({
-    preference,
+    theme,
     resolvedTheme,
     setTheme,
     toggleTheme,
-  }), [preference, resolvedTheme, setTheme, toggleTheme]);
+  }), [theme, resolvedTheme, setTheme, toggleTheme]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BackgroundConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
+import { useTheme } from '../../../hooks/useTheme';
+import type { ThemePreference } from '../../../lib/ThemeContext';
 import { SVG_PATHS } from '../constants';
 
 const DEFAULT_SYNC_CONFIG: SyncConfig = {
@@ -17,6 +19,12 @@ const BACKUP_OPTIONS: { key: BackupDataType; label: string; getCount: (counts: {
   { key: 'memories', label: '记忆', getCount: (counts) => counts.memories },
   { key: 'skills', label: 'Skill', getCount: (counts) => counts.skills },
   { key: 'presets', label: '预设', getCount: (counts) => counts.presets },
+];
+
+const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: 'light', label: '浅色模式' },
+  { value: 'dark', label: '暗黑模式' },
+  { value: 'system', label: '系统自动' },
 ];
 
 type BackupSelection = Record<BackupDataType, boolean>;
@@ -80,6 +88,7 @@ function mergeMemoryForImport(imported: Memory, existing: Memory): Memory {
 }
 
 export default function SettingsPage() {
+  const { theme, resolvedTheme, setTheme } = useTheme();
   const [memoryCount, setMemoryCount] = useState(0);
   const [customSkillCount, setCustomSkillCount] = useState(0);
   const [presetCount, setPresetCount] = useState(0);
@@ -411,6 +420,42 @@ export default function SettingsPage() {
   return (
     <div className="p-4 space-y-5">
       <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
+              主题设置
+            </h2>
+            <p className="text-[11px] mt-1" style={{ color: 'var(--ds-text-tertiary)' }}>
+              当前实际显示为{resolvedTheme === 'dark' ? '暗黑模式' : '浅色模式'}
+            </p>
+          </div>
+        </div>
+        <div className="ds-surface-panel rounded-xl p-2">
+          <div className="grid grid-cols-3 gap-1.5">
+            {THEME_OPTIONS.map((option) => {
+              const active = theme === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setTheme(option.value)}
+                  className="rounded-lg border px-2 py-2 text-[11px] font-medium transition-all duration-150"
+                  style={{
+                    borderColor: active ? 'var(--ds-accent-primary)' : 'var(--ds-border)',
+                    background: active ? 'var(--ds-accent-muted)' : 'var(--ds-bg)',
+                    color: active ? 'var(--ds-accent-primary)' : 'var(--ds-text-secondary)',
+                    boxShadow: active ? 'var(--ds-blue-shadow)' : 'none',
+                  }}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
         <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
           模型设置
         </h2>
@@ -655,7 +700,7 @@ export default function SettingsPage() {
             className="ds-btn-secondary flex-1 py-2.5 text-xs font-medium rounded-lg transition-all duration-150 flex items-center justify-center gap-1.5 disabled:opacity-40"
             style={
               syncConfig.url && syncStatus !== 'testing' && syncStatus !== 'syncing'
-                ? { background: 'var(--ds-blue)', color: '#fff', borderColor: 'var(--ds-blue)' }
+                ? { background: 'var(--ds-blue)', color: 'var(--ds-accent-contrast)', borderColor: 'var(--ds-blue)' }
                 : undefined
             }
           >
@@ -678,8 +723,9 @@ export default function SettingsPage() {
           <div
             className="text-[11px] px-3 py-2 rounded-lg"
             style={{
-              color: syncStatus === 'error' ? '#EF4444' : '#10B981',
-              background: syncStatus === 'error' ? '#FEF2F2' : '#ECFDF5',
+              color: syncStatus === 'error' ? 'var(--ds-status-error)' : 'var(--ds-status-success)',
+              background: syncStatus === 'error' ? 'var(--ds-status-error-bg)' : 'var(--ds-status-success-bg)',
+              border: `1px solid ${syncStatus === 'error' ? 'var(--ds-status-error-border)' : 'var(--ds-status-success-border)'}`,
             }}
           >
             {syncMessage}
@@ -735,7 +781,7 @@ export default function SettingsPage() {
                   className="rounded-lg border px-2.5 py-2 text-left transition-all duration-150"
                   style={{
                     borderColor: selected ? 'var(--ds-blue)' : 'var(--ds-border)',
-                    background: selected ? 'rgba(77, 107, 254, 0.08)' : 'var(--ds-bg)',
+                    background: selected ? 'var(--ds-accent-muted)' : 'var(--ds-bg)',
                     color: selected ? 'var(--ds-blue)' : 'var(--ds-text-secondary)',
                   }}
                 >
@@ -745,7 +791,7 @@ export default function SettingsPage() {
                       style={{
                         borderColor: selected ? 'var(--ds-blue)' : 'var(--ds-border)',
                         background: selected ? 'var(--ds-blue)' : 'transparent',
-                        color: selected ? '#fff' : 'transparent',
+                        color: selected ? 'var(--ds-accent-contrast)' : 'transparent',
                       }}
                     >
                       ✓

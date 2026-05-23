@@ -40,6 +40,55 @@ const pendingCallMap = new Map<number, {
   resolved: boolean;
 }>();
 
+type RuntimeMessage = { type: string; payload?: unknown } & Record<string, unknown>;
+
+function isExtensionContextAvailable(): boolean {
+  try {
+    return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+async function safeRuntimeSendMessage<T>(message: RuntimeMessage): Promise<T | null> {
+  if (!isExtensionContextAvailable()) return null;
+  try {
+    return await chrome.runtime.sendMessage(message) as T;
+  } catch {
+    return null;
+  }
+}
+
+function safeRuntimeOnMessage(
+  listener: Parameters<typeof chrome.runtime.onMessage.addListener>[0],
+): boolean {
+  if (!isExtensionContextAvailable()) return false;
+  try {
+    chrome.runtime.onMessage.addListener(listener);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function safeStorageLocalGet(key: string): Promise<Record<string, unknown> | null> {
+  if (!isExtensionContextAvailable()) return null;
+  try {
+    return await chrome.storage.local.get(key) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function safeStorageLocalSet(data: Record<string, unknown>): Promise<void> {
+  if (!isExtensionContextAvailable()) return;
+  try {
+    await chrome.storage.local.set(data);
+  } catch {
+    // The content script may outlive the extension context during reload/update.
+  }
+}
+
 export default defineContentScript({
   matches: ['*://chat.deepseek.com/*'],
   runAt: 'document_start',
@@ -50,12 +99,12 @@ export default defineContentScript({
     });
 
     const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
-      chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }),
-      chrome.runtime.sendMessage({ type: 'GET_SKILLS' }),
-      chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
-      chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
-      chrome.runtime.sendMessage({ type: 'GET_MODEL_TYPE' }),
-      chrome.runtime.sendMessage({ type: 'GET_TOOL_DESCRIPTORS' }),
+      safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
+      safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
+      safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
+      safeRuntimeSendMessage<SystemPromptPreset | null>({ type: 'GET_ACTIVE_PRESET' }),
+      safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
+      safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
     ]);
 
     syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, toolDescriptors ?? []);
@@ -89,12 +138,12 @@ export default defineContentScript({
 
         case 'MEMORIES_USED': {
           const ids = event.data.ids as number[];
-          await chrome.runtime.sendMessage({ type: 'TOUCH_MEMORIES', payload: { ids } });
+          await safeRuntimeSendMessage({ type: 'TOUCH_MEMORIES', payload: { ids } });
           break;
         }
         case 'SKILL_USED': {
           const name = event.data.name as string;
-          await chrome.runtime.sendMessage({ type: 'TOUCH_USAGE', payload: { kind: 'skill', name } });
+          await safeRuntimeSendMessage({ type: 'TOUCH_USAGE', payload: { kind: 'skill', name } });
           break;
         }
         case 'RESPONSE_COMPLETE': {
@@ -108,14 +157,14 @@ export default defineContentScript({
         }
         case 'SET_ACTIVE_PRESET': {
           const id = event.data.id as string | null;
-          await chrome.runtime.sendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
+          await safeRuntimeSendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
           const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
-            chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }),
-            chrome.runtime.sendMessage({ type: 'GET_SKILLS' }),
-            chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
-            chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
-            chrome.runtime.sendMessage({ type: 'GET_MODEL_TYPE' }),
-            chrome.runtime.sendMessage({ type: 'GET_TOOL_DESCRIPTORS' }),
+            safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
+            safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
+            safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
+            safeRuntimeSendMessage<SystemPromptPreset | null>({ type: 'GET_ACTIVE_PRESET' }),
+            safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
+            safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
           ]);
           syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, toolDescriptors ?? []);
           break;
@@ -123,23 +172,23 @@ export default defineContentScript({
       }
     });
 
-    chrome.runtime.sendMessage({ type: 'GET_BACKGROUND' }).then((cfg: BackgroundConfig | null) => {
+    safeRuntimeSendMessage<BackgroundConfig | null>({ type: 'GET_BACKGROUND' }).then((cfg) => {
       applyBackground(cfg);
     });
 
-    chrome.runtime.onMessage.addListener((message) => {
+    safeRuntimeOnMessage((message) => {
       if (message.type === 'STATE_UPDATED') {
         syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType, message.toolDescriptors ?? []);
       } else if (message.type === 'TOOL_DESCRIPTORS_UPDATED') {
-        chrome.runtime.sendMessage({ type: 'GET_TOOL_DESCRIPTORS' }).then((descriptors: ToolDescriptor[]) => {
+        safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }).then((descriptors) => {
           window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'SYNC_TOOL_DESCRIPTORS', toolDescriptors: descriptors ?? [] });
-        }).catch(() => {});
+        });
       } else if (message.type === 'BACKGROUND_UPDATED') {
         applyBackground(message.config as BackgroundConfig | null);
       }
     });
 
-    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    safeRuntimeOnMessage((message, _sender, sendResponse) => {
       if (typeof message.type !== 'string' || !message.type.startsWith('DS_')) return false;
       handleConversationRequest(message)
         .then(sendResponse)
@@ -201,7 +250,7 @@ function syncToMainWorld(
  */
 async function refreshMemoryList() {
   try {
-    const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
+    const memories = await safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' });
     if (memories) {
       window.postMessage({
         source: 'WebTool-DeepSeek-content',
@@ -470,7 +519,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
 
 async function executeToolCall(call: ToolCall): Promise<ToolCardResult> {
   try {
-    const result = await chrome.runtime.sendMessage({ type: 'EXECUTE_TOOL_CALL', payload: call }) as ToolCardResult | null;
+    const result = await safeRuntimeSendMessage<ToolCardResult>({ type: 'EXECUTE_TOOL_CALL', payload: call });
     return result ?? { ok: false, summary: '执行失败', detail: '后台未返回执行结果' };
   } catch (err) {
     return { ok: false, summary: '执行失败', detail: err instanceof Error ? err.message : String(err) };
@@ -532,14 +581,15 @@ function persistToolExecutions() {
 
   if (records.length > 0) {
     const key = STORAGE_PREFIX + window.location.pathname;
-    chrome.storage.local.set({ [key]: records }).catch(() => {});
+    safeStorageLocalSet({ [key]: records });
   }
 }
 
 async function restorePersistedToolBlocks() {
   try {
     const key = STORAGE_PREFIX + window.location.pathname;
-    const data = await chrome.storage.local.get(key) as Record<string, unknown>;
+    const data = await safeStorageLocalGet(key);
+    if (!data) return;
     const stored = data[key];
     if (!Array.isArray(stored)) return;
 
