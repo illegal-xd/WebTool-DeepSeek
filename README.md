@@ -32,6 +32,10 @@
 - **默认限制** — 连接超时 10s，请求超时 60s，发现超时 20s，单次结果上限 64KB，单服务工具上限 128 个；当前 UI 暴露服务基础配置，allowlist、headers、secret、timeout 等高级字段为底层类型预留
 - **本地服务要求** — HTTP/SSE/Streamable HTTP 服务需要正确返回 CORS 头；Chrome host permission 负责扩展访问权限，CORS 仍由本地 MCP 服务端负责
 
+<p align="center">
+  <img src="assets/screenshot-memory-mcp.png" width="600" alt="mcp服务" />
+</p>
+
 ### 记忆系统
 
 - **自动记忆** — AI 在对话中识别到关键信息时，通过 tool_call 自动保存为长期记忆
