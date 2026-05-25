@@ -5,12 +5,14 @@ import {
   renameDeepSeekSession,
 } from '../core/conversation/api';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, createXmlToolCallRegex } from '../core/tool';
+import type { MemoryConfig } from '../core/memory/config';
 import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCallHistoryRecord, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
 const BLOCK_CLASS = 'dpp-tool-block';
 const BLOCK_STYLE_ID = 'dpp-tool-block-css';
 const STORAGE_PREFIX = 'dpp_tool_exec_';
 const RECOGNIZED_TOOL_TAGS = [...DEFAULT_RECOGNIZED_TOOL_TAGS];
+const ROUTE_RESTORE_WINDOW_MS = 4000;
 
 interface DomToolCleanupState {
   insideToolBlock: boolean;
@@ -32,6 +34,8 @@ const assistantToolCleanupState = new WeakMap<Element, DomToolCleanupState>();
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
 const resolvedCallRaws = new Set<string>();
 const activeToolExecutions = new Set<Promise<unknown>>();
+let routeRestoreUntil = 0;
+let suppressToolPlaceholderUntil = 0;
 
 /**
  * Map of callId -> { call, block, promise } for tracking tool calls
@@ -160,12 +164,18 @@ export default defineContentScript({
           const records = event.data.records as ToolCallRestoreRecord[];
           const hydratedRecords = await hydrateToolCallRestoreRecords(records);
           await persistToolRestoreRecords(hydratedRecords);
-          renderRestoredToolBlocks(hydratedRecords.filter(isCurrentChatSessionRecord));
+          renderRestoredToolBlocks(
+            hydratedRecords.filter(isCurrentChatSessionRecord),
+            getToolRestoreStorageKey(),
+            0,
+            { allowAssistantIndexFallback: true },
+          );
           break;
         }
         case 'ROUTE_CHANGED': {
+          markRouteRestoreWindow();
           clearRenderedToolBlocks();
-          setTimeout(() => restorePersistedToolBlocks(), 300);
+          setTimeout(() => restorePersistedToolBlocks(), 900);
           break;
         }
         case 'SET_ACTIVE_PRESET': {
@@ -191,9 +201,9 @@ export default defineContentScript({
       applyBackground(cfg);
     });
 
-    safeRuntimeSendMessage<{ tokenBudget: number }>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
+    safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
       if (cfg) {
-        window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', tokenBudget: cfg.tokenBudget });
+        window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', ...cfg });
       }
     });
 
@@ -202,16 +212,16 @@ export default defineContentScript({
         currentToolDescriptors = message.toolDescriptors ?? [];
         syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType, currentToolDescriptors);
         // Also refresh memory config in case it was changed
-        safeRuntimeSendMessage<{ tokenBudget: number }>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
+        safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
           if (cfg) {
-            window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', tokenBudget: cfg.tokenBudget });
+            window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', ...cfg });
           }
         });
         cleanRenderedToolCalls();
       } else if (message.type === 'MEMORY_CONFIG_UPDATED') {
-        const { tokenBudget } = message as { tokenBudget: number };
-        if (typeof tokenBudget === 'number' && tokenBudget > 0) {
-          window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', tokenBudget });
+        const config = message as MemoryConfig;
+        if (typeof config.tokenBudget === 'number' && config.tokenBudget > 0) {
+          window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', ...config });
         }
       } else if (message.type === 'TOOL_DESCRIPTORS_UPDATED') {
         safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }).then((descriptors) => {
@@ -439,12 +449,18 @@ function addExecutingToolItem(block: HTMLElement, call: ToolCall) {
 	  body.appendChild(item);
 	}
 
-function renderEarlyToolPlaceholder(name: string) {
+function renderEarlyToolPlaceholder(name: string, targetMessage?: Element) {
   const displayName = getToolDisplayName(name);
   if (earlyPlaceholderNames.includes(displayName)) return;
 
-  if (currentToolBlock && document.contains(currentToolBlock)) {
-    addExecutingToolItem(currentToolBlock, { name: displayName, invocationName: name, payload: {}, raw: '' });
+  const existingBlock = targetMessage?.querySelector<HTMLElement>(`.${BLOCK_CLASS}`) ?? null;
+  const targetBlock = existingBlock
+    ?? (currentToolBlock && document.contains(currentToolBlock) && (!targetMessage || targetMessage.contains(currentToolBlock))
+      ? currentToolBlock
+      : null);
+
+  if (targetBlock) {
+    addExecutingToolItem(targetBlock, { name: displayName, invocationName: name, payload: {}, raw: '' });
     earlyPlaceholderNames.push(displayName);
     return;
   }
@@ -453,11 +469,15 @@ function renderEarlyToolPlaceholder(name: string) {
   currentToolBlock = block;
   earlyPlaceholderNames.push(displayName);
 
-  const lastMsg = getLastAssistantMessage();
-  if (lastMsg) {
-    lastMsg.appendChild(block);
+  if (targetMessage instanceof HTMLElement) {
+    targetMessage.appendChild(block);
   } else {
-    document.body.appendChild(block);
+    const lastMsg = getLastAssistantMessage();
+    if (lastMsg) {
+      lastMsg.appendChild(block);
+    } else {
+      document.body.appendChild(block);
+    }
   }
 }
 
@@ -728,6 +748,16 @@ function clearRenderedToolBlocks() {
   });
 }
 
+function markRouteRestoreWindow() {
+  const until = Date.now() + ROUTE_RESTORE_WINDOW_MS;
+  routeRestoreUntil = until;
+  suppressToolPlaceholderUntil = until;
+}
+
+function isRouteRestoreWindowActive(): boolean {
+  return Date.now() < routeRestoreUntil;
+}
+
 async function restorePersistedToolBlocks() {
   try {
     const key = getToolRestoreStorageKey();
@@ -738,7 +768,10 @@ async function restorePersistedToolBlocks() {
 
     const records = (stored as ToolCallRestoreRecord[]).filter(isCurrentChatSessionRecord);
     const hydratedRecords = await hydrateToolCallRestoreRecords(records);
-    renderRestoredToolBlocks(hydratedRecords, key);
+    renderRestoredToolBlocks(hydratedRecords, key, 0, {
+      allowAssistantIndexFallback: true,
+      assistantIndexFallbackMinAttempt: 3,
+    });
   } catch {
     // ignore storage errors
   }
@@ -790,7 +823,17 @@ function stableStringify(value: unknown): string {
     .join(',')}}`;
 }
 
-function renderRestoredToolBlocks(records: ToolCallRestoreRecord[], storageKey = getToolRestoreStorageKey(), attempt = 0) {
+interface RestoreRenderOptions {
+  allowAssistantIndexFallback?: boolean;
+  assistantIndexFallbackMinAttempt?: number;
+}
+
+function renderRestoredToolBlocks(
+  records: ToolCallRestoreRecord[],
+  storageKey = getToolRestoreStorageKey(),
+  attempt = 0,
+  options: RestoreRenderOptions = {},
+) {
   if (storageKey !== getToolRestoreStorageKey()) return;
   const pendingRecords: ToolCallRestoreRecord[] = [];
   const assistantMessages = findAssistantMessages();
@@ -803,12 +846,12 @@ function renderRestoredToolBlocks(records: ToolCallRestoreRecord[], storageKey =
     .filter((record) => record.executions.length > 0);
 
   if (assistantMessages.length < restorableRecords.length && attempt < 20) {
-    setTimeout(() => renderRestoredToolBlocks(records, storageKey, attempt + 1), 300);
+    setTimeout(() => renderRestoredToolBlocks(records, storageKey, attempt + 1, options), 300);
     return;
   }
 
-  restorableRecords.forEach((record, recordIndex) => {
-    const targetMessage = findAssistantMessageForToolRecord(record, assistantMessages, usedMessages, recordIndex);
+  restorableRecords.forEach((record) => {
+    const targetMessage = findAssistantMessageForToolRecord(record, assistantMessages, usedMessages, options, attempt);
     if (!targetMessage) {
       pendingRecords.push(record);
       return;
@@ -819,7 +862,7 @@ function renderRestoredToolBlocks(records: ToolCallRestoreRecord[], storageKey =
   });
 
   if (pendingRecords.length > 0 && attempt < 20) {
-    setTimeout(() => renderRestoredToolBlocks(pendingRecords, storageKey, attempt + 1), 300);
+    setTimeout(() => renderRestoredToolBlocks(pendingRecords, storageKey, attempt + 1, options), 300);
   }
 }
 
@@ -827,7 +870,8 @@ function findAssistantMessageForToolRecord(
   record: ToolCallRestoreRecord,
   assistantMessages: HTMLElement[],
   usedMessages: Set<HTMLElement>,
-  recordIndex: number,
+  options: RestoreRenderOptions,
+  attempt: number,
 ): HTMLElement | null {
   const cleanContent = typeof record.metadata?.cleanContent === 'string' ? record.metadata.cleanContent : '';
   const normalizedRecordContent = normalizeToolRecordText(cleanContent || record.content);
@@ -836,16 +880,24 @@ function findAssistantMessageForToolRecord(
     const contentMatch = assistantMessages.find((message) => {
       if (usedMessages.has(message) || message.querySelector(`.${BLOCK_CLASS}`)) return false;
       const normalizedMessageText = normalizeToolRecordText(message.textContent || '');
+      if (!normalizedMessageText) return false;
       return normalizedMessageText.includes(normalizedRecordContent) || normalizedRecordContent.includes(normalizedMessageText);
     });
     if (contentMatch) return contentMatch;
   }
 
-  const assistantIndex = typeof record.metadata?.assistantIndex === 'number' ? record.metadata.assistantIndex : recordIndex;
-  const indexedMessage = assistantMessages[assistantIndex];
-  if (indexedMessage && !usedMessages.has(indexedMessage) && !indexedMessage.querySelector(`.${BLOCK_CLASS}`)) return indexedMessage;
+  if (options.allowAssistantIndexFallback === true) {
+    const minAttempt = options.assistantIndexFallbackMinAttempt ?? 0;
+    if (attempt < minAttempt) return null;
 
-  return assistantMessages.find((message) => !usedMessages.has(message) && !message.querySelector(`.${BLOCK_CLASS}`)) ?? null;
+    const assistantIndex = typeof record.metadata?.assistantIndex === 'number' ? record.metadata.assistantIndex : null;
+    const indexedMessage = assistantIndex !== null ? assistantMessages[assistantIndex] : null;
+    if (indexedMessage && !usedMessages.has(indexedMessage) && !indexedMessage.querySelector(`.${BLOCK_CLASS}`)) {
+      return indexedMessage;
+    }
+  }
+
+  return null;
 }
 
 function normalizeToolRecordText(value: string): string {
@@ -856,6 +908,8 @@ function normalizeToolRecordText(value: string): string {
 }
 
 function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRestoreRecord) {
+  if (targetMessage.querySelector(`.${BLOCK_CLASS}`)) return;
+
   const block = document.createElement('div');
   block.className = BLOCK_CLASS;
   block.setAttribute('data-collapsed', 'false');
@@ -951,8 +1005,8 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
     if (!text && !state.insideToolBlock) continue;
 
     const cleaned = removeToolMarkupFromText(text, state, node);
-    if (cleaned.sawOpeningTag) {
-      renderEarlyToolPlaceholder(cleaned.sawOpeningTag);
+    if (cleaned.sawOpeningTag && Date.now() >= suppressToolPlaceholderUntil) {
+      renderEarlyToolPlaceholder(cleaned.sawOpeningTag, assistantMessage);
     }
     if (cleaned.changed) {
       node.textContent = cleaned.text;
@@ -1166,6 +1220,7 @@ function setupDOMObserver() {
   const checkRouteChange = () => {
     if (lastPathname === window.location.pathname) return;
     lastPathname = window.location.pathname;
+    markRouteRestoreWindow();
     scheduleRestore();
   };
 
@@ -1199,7 +1254,9 @@ function setupDOMObserver() {
         if (node.nodeType === Node.ELEMENT_NODE) {
           needsPatch = true;
           const el = node as HTMLElement;
-          if (getAssistantMessageRoot(el) || el.querySelector('[class*="message"][class*="assistant"], [class*="ds-chat-message-assistant"], [class*="ds-msg-assistant"], [data-role="assistant"]')) scheduleRestore();
+          if (isRouteRestoreWindowActive() && (getAssistantMessageRoot(el) || el.querySelector('[class*="message"][class*="assistant"], [class*="ds-chat-message-assistant"], [class*="ds-msg-assistant"], [data-role="assistant"]'))) {
+            scheduleRestore();
+          }
           if (el.classList?.contains(BLOCK_CLASS)) continue;
           const text = el.textContent || '';
           const assistantMessage = getAssistantMessageRoot(el);

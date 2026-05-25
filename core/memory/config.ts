@@ -2,10 +2,12 @@ const STORAGE_KEY = 'webtool_deepseek_memory_config';
 
 export interface MemoryConfig {
   tokenBudget: number;
+  singleMemoryInjection: boolean;
 }
 
 const DEFAULT_CONFIG: MemoryConfig = {
   tokenBudget: 3000,
+  singleMemoryInjection: false,
 };
 
 export async function getMemoryConfig(): Promise<MemoryConfig> {
@@ -15,13 +17,19 @@ export async function getMemoryConfig(): Promise<MemoryConfig> {
     const config = raw as Partial<MemoryConfig>;
     return {
       tokenBudget: typeof config.tokenBudget === 'number' && config.tokenBudget > 0 ? config.tokenBudget : DEFAULT_CONFIG.tokenBudget,
+      singleMemoryInjection: config.singleMemoryInjection === true,
     };
   }
   return { ...DEFAULT_CONFIG };
 }
 
 export async function saveMemoryConfig(config: MemoryConfig): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: { tokenBudget: config.tokenBudget } });
+  await chrome.storage.local.set({
+    [STORAGE_KEY]: {
+      tokenBudget: config.tokenBudget,
+      singleMemoryInjection: config.singleMemoryInjection === true,
+    },
+  });
 }
 
 export function getDefaultMemoryBudget(): number {

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { APP_VERSION } from '../../config.js';
 import MemoryPage from './pages/MemoryPage';
 import SkillPage from './pages/SkillPage';
 import PresetPage from './pages/PresetPage';
@@ -39,7 +40,7 @@ export default function App() {
           </h1>
         </div>
         <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ color: 'var(--ds-text-tertiary)', background: 'var(--ds-surface)' }}>
-          v0.5.5
+          v{APP_VERSION}
         </span>
       </header>
 

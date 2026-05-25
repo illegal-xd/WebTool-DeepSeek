@@ -1,5 +1,6 @@
 import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
+import { APP_VERSION } from './config.js';
 
 export default defineConfig({
   outDir: 'dist',
@@ -7,7 +8,7 @@ export default defineConfig({
   manifest: {
     name: 'WebTool-DeepSeek',
     description: 'Agentic memory & skill system for DeepSeek',
-    version: '0.5.5',
+    version: APP_VERSION,
     permissions: ['sidePanel', 'storage', 'nativeMessaging'],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
     side_panel: {

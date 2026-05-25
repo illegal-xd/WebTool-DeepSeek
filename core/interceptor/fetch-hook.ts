@@ -8,6 +8,8 @@ import { extractToolCalls, stripToolCalls } from './tool-parser';
 
 const API_PATH = new URL(DEEPSEEK_API_URL).pathname;
 const HISTORY_PATH = '/api/v0/chat/history_messages';
+const SINGLE_INJECTION_STORAGE_KEY = 'webtool_deepseek_single_injection_sessions';
+const PENDING_SINGLE_INJECTION_SESSION = '__pending_chat_session__';
 
 interface HookState {
   memories: Memory[];
@@ -17,7 +19,9 @@ interface HookState {
   toolDescriptors: ToolDescriptor[];
   recognizedToolTags: string[];
   memoryTokenBudget: number;
+  singleMemoryInjection: boolean;
   _lastChatSessionId: string | null;
+  _singleInjectionSessionIds: Set<string>;
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
   onMemoriesUsed: (ids: number[]) => void;
@@ -34,7 +38,9 @@ let hookState: HookState = {
   toolDescriptors: [],
   recognizedToolTags: [...DEFAULT_RECOGNIZED_TOOL_TAGS],
   memoryTokenBudget: 3000,
+  singleMemoryInjection: false,
   _lastChatSessionId: null,
+  _singleInjectionSessionIds: new Set(),
   onToolCall: () => {},
   onResponseComplete: () => {},
   onMemoriesUsed: () => {},
@@ -43,9 +49,46 @@ let hookState: HookState = {
   onSkillUsed: () => {},
 };
 
-let originalFetch: typeof window.fetch | null = null;
+function readSingleInjectionSessionIds(): Set<string> {
+  try {
+    const raw = window.sessionStorage.getItem(SINGLE_INJECTION_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((value): value is string => typeof value === 'string' && value.length > 0));
+  } catch {
+    return new Set();
+  }
+}
 
-/** Cache of the raw history API response, re-processed when MCP tool descriptors arrive late */
+function saveSingleInjectionSessionIds() {
+  try {
+    const ids = [...hookState._singleInjectionSessionIds].filter((id) => id !== PENDING_SINGLE_INJECTION_SESSION);
+    window.sessionStorage.setItem(SINGLE_INJECTION_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function markSingleInjectionSession(sessionId: string) {
+  hookState._singleInjectionSessionIds.add(sessionId);
+  if (sessionId !== PENDING_SINGLE_INJECTION_SESSION) {
+    saveSingleInjectionSessionIds();
+  }
+}
+
+function deleteSingleInjectionSession(sessionId: string) {
+  hookState._singleInjectionSessionIds.delete(sessionId);
+  if (sessionId !== PENDING_SINGLE_INJECTION_SESSION) {
+    saveSingleInjectionSessionIds();
+  }
+}
+
+export function bindPendingSingleInjectionSession(sessionId: string) {
+  if (!hookState._singleInjectionSessionIds.has(PENDING_SINGLE_INJECTION_SESSION)) return;
+  markSingleInjectionSession(sessionId);
+  deleteSingleInjectionSession(PENDING_SINGLE_INJECTION_SESSION);
+}
+
 let storedHistoryRaw: { json: unknown; sessionId: string | null } | null = null;
 
 interface ToolStreamFilterState {
@@ -76,7 +119,7 @@ export async function reprocessStoredHistory(): Promise<void> {
 }
 
 export function installFetchHook() {
-  originalFetch = window.fetch;
+  hookState._singleInjectionSessionIds = readSingleInjectionSessionIds();
   hookFetch();
   hookXHR();
   hookHistoryFetch();
@@ -142,11 +185,8 @@ function modifyRequestBody(bodyStr: string): string | null {
 
   const thinkingEnabled = body.thinking_enabled === true;
   const chatSessionId = typeof body.chat_session_id === 'string' ? body.chat_session_id : null;
-  const chatSessionChanged = chatSessionId !== null && chatSessionId !== hookState._lastChatSessionId;
-  const isFirstMessage =
-    body.parent_message_id === null ||
-    body.parent_message_id === undefined ||
-    chatSessionChanged;
+  const hasConcreteParentMessage = body.parent_message_id !== null && body.parent_message_id !== undefined;
+  const isFirstMessage = !hasConcreteParentMessage;
 
   if (chatSessionId !== null) {
     hookState._lastChatSessionId = chatSessionId;
@@ -217,6 +257,16 @@ function modifyRequestBody(bodyStr: string): string | null {
     }
   }
 
+  const shouldUseSingleMemoryInjection = hookState.singleMemoryInjection && !hookState.activePreset;
+  const singleInjectionSessionId = chatSessionId ?? PENDING_SINGLE_INJECTION_SESSION;
+  if (chatSessionId !== null && hasConcreteParentMessage) {
+    bindPendingSingleInjectionSession(chatSessionId);
+  }
+  if (!isFirstMessage && shouldUseSingleMemoryInjection && hookState._singleInjectionSessionIds.has(singleInjectionSessionId)) {
+    body.prompt = originalPrompt;
+    return JSON.stringify(body);
+  }
+
   const { augmented, usedMemoryIds } = buildAugmentedPrompt(originalPrompt, targetMemories, {
     thinkingEnabled,
     identityOnly,
@@ -225,6 +275,9 @@ function modifyRequestBody(bodyStr: string): string | null {
     instructionBlock: presetInstruction,
   });
   body.prompt = augmented;
+  if (shouldUseSingleMemoryInjection) {
+    markSingleInjectionSession(singleInjectionSessionId);
+  }
 
   if (usedMemoryIds.length > 0) {
     hookState.onMemoriesUsed(usedMemoryIds);

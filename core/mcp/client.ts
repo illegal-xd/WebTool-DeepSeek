@@ -1,9 +1,10 @@
+import { APP_VERSION } from '../../config.js';
 import type { JsonValue, ToolCall, ToolDescriptor, ToolDescriptorSchema, ToolResult, ToolTransportKind } from '../tool/types';
 import type { McpCallToolOptions, McpCallToolResult, McpContentBlock, McpInitializeResult, McpJsonRpcNotification, McpJsonRpcRequest, McpJsonRpcResponse, McpListToolsResult, McpProtocolClient, McpProtocolTransport, McpServerConfig, McpToolDefinition } from './types';
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 
-const CLIENT_INFO = { name: 'WebTool-DeepSeek', version: '0.5.5' };
+const CLIENT_INFO = { name: 'WebTool-DeepSeek', version: APP_VERSION };
 
 export class McpProtocolError extends Error {
   readonly code: string;

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { APP_VERSION } from '../../../config.js';
+import type { MemoryConfig } from '../../../core/memory/config';
 import type { BackgroundConfig, McpServerConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
 import { useTheme } from '../../../hooks/useTheme';
 import type { ThemePreference } from '../../../lib/ThemeContext';
@@ -105,6 +107,7 @@ export default function SettingsPage() {
   const [backupSelection, setBackupSelection] = useState<BackupSelection>(DEFAULT_BACKUP_SELECTION);
   const [expertMode, setExpertMode] = useState(false);
   const [memoryTokenBudget, setMemoryTokenBudget] = useState(3000);
+  const [singleMemoryInjection, setSingleMemoryInjection] = useState(false);
   const [bgEnabled, setBgEnabled] = useState(false);
   const [bgType, setBgType] = useState<'upload' | 'url'>('upload');
   const [bgUrl, setBgUrl] = useState('');
@@ -150,8 +153,10 @@ export default function SettingsPage() {
       setBgImageData(cfg.imageData ?? '');
       setBgOpacity(cfg.opacity);
     });
-    chrome.runtime.sendMessage({ type: 'GET_MEMORY_CONFIG' }).then((cfg: { tokenBudget: number } | null) => {
-      if (cfg) setMemoryTokenBudget(cfg.tokenBudget);
+    chrome.runtime.sendMessage({ type: 'GET_MEMORY_CONFIG' }).then((cfg: MemoryConfig | null) => {
+      if (!cfg) return;
+      setMemoryTokenBudget(cfg.tokenBudget);
+      setSingleMemoryInjection(cfg.singleMemoryInjection === true);
     });
   }, []);
 
@@ -166,7 +171,18 @@ export default function SettingsPage() {
   const handleMemoryTokenBudgetChange = async (val: number) => {
     const clamped = Math.max(500, Math.min(10000, val));
     setMemoryTokenBudget(clamped);
-    await chrome.runtime.sendMessage({ type: 'SET_MEMORY_CONFIG', payload: { tokenBudget: clamped } });
+    await chrome.runtime.sendMessage({
+      type: 'SET_MEMORY_CONFIG',
+      payload: { tokenBudget: clamped, singleMemoryInjection },
+    });
+  };
+
+  const handleSingleMemoryInjectionChange = async (enabled: boolean) => {
+    setSingleMemoryInjection(enabled);
+    await chrome.runtime.sendMessage({
+      type: 'SET_MEMORY_CONFIG',
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled },
+    });
   };
 
   const saveBgConfig = async (patch: Partial<BackgroundConfig>) => {
@@ -319,7 +335,7 @@ export default function SettingsPage() {
 
     const exportData: BackupPayload = {
       type: 'webtool-deepseek_backup',
-      version: '0.5.5',
+      version: APP_VERSION,
       exportedAt: Date.now(),
       includes: backupSelection,
     };
@@ -639,7 +655,9 @@ export default function SettingsPage() {
               </div>
             </div>
             <button
+              type="button"
               onClick={() => handleExpertToggle(!expertMode)}
+              aria-pressed={expertMode}
               className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
               style={{
                 background: expertMode ? 'var(--ds-blue)' : 'var(--ds-border)',
@@ -649,6 +667,33 @@ export default function SettingsPage() {
                 className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
                 style={{
                   transform: expertMode ? 'translateX(18px)' : 'translateX(0)',
+                }}
+              />
+            </button>
+          </div>
+
+          <div className="border-t pt-3 flex justify-between items-center" style={{ borderColor: 'var(--ds-border)' }}>
+            <div>
+              <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                单一记忆注入
+              </div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                同一对话中默认提示词与自动记忆只注入一次
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleSingleMemoryInjectionChange(!singleMemoryInjection)}
+              aria-pressed={singleMemoryInjection}
+              className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
+              style={{
+                background: singleMemoryInjection ? 'var(--ds-blue)' : 'var(--ds-border)',
+              }}
+            >
+              <span
+                className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                style={{
+                  transform: singleMemoryInjection ? 'translateX(18px)' : 'translateX(0)',
                 }}
               />
             </button>

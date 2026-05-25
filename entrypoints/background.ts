@@ -8,6 +8,7 @@ import {
   replaceAllMemories,
   archiveStaleMemories,
 } from '../core/memory/store';
+import { APP_VERSION } from '../config.js';
 import { getAllSkills, saveSkill, deleteSkill, replaceAllCustomSkills, touchSkill } from '../core/skill/registry';
 import {
   getAllPresets,
@@ -272,14 +273,15 @@ async function handleMessage(
     }
 
     case 'GET_CONFIG':
-      return { version: '0.5.5' };
+      return { version: APP_VERSION };
 
     case 'GET_MEMORY_CONFIG':
       return getMemoryConfig();
 
     case 'SET_MEMORY_CONFIG': {
-      await saveMemoryConfig(message.payload as MemoryConfig);
-      await broadcastToTabs({ type: 'MEMORY_CONFIG_UPDATED', tokenBudget: (message.payload as MemoryConfig).tokenBudget }, sender.tab?.id);
+      const config = message.payload as MemoryConfig;
+      await saveMemoryConfig(config);
+      await broadcastToTabs({ type: 'MEMORY_CONFIG_UPDATED', ...config }, sender.tab?.id);
       return { ok: true };
     }
 

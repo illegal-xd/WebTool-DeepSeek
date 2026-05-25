@@ -1,4 +1,5 @@
-import { installFetchHook, updateHookState, reprocessStoredHistory } from '../core/interceptor/fetch-hook';
+import { installFetchHook, updateHookState, reprocessStoredHistory, bindPendingSingleInjectionSession } from '../core/interceptor/fetch-hook';
+import type { MemoryConfig } from '../core/memory/config';
 import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
@@ -116,9 +117,12 @@ export default defineContentScript({
           break;
         }
         case 'MEMORY_CONFIG_UPDATED': {
-          const { tokenBudget } = event.data as { tokenBudget: number };
-          if (typeof tokenBudget === 'number' && tokenBudget > 0) {
-            updateHookState({ memoryTokenBudget: tokenBudget });
+          const config = event.data as MemoryConfig;
+          if (typeof config.tokenBudget === 'number' && config.tokenBudget > 0) {
+            updateHookState({
+              memoryTokenBudget: config.tokenBudget,
+              singleMemoryInjection: config.singleMemoryInjection === true,
+            });
           }
           break;
         }
@@ -127,12 +131,21 @@ export default defineContentScript({
   },
 });
 
+function getChatSessionIdFromPathname(pathname: string): string | null {
+  const match = pathname.match(/\/chat\/s\/([^/?#]+)/);
+  return match?.[1] ?? null;
+}
+
 function watchRouteChanges() {
   let lastPathname = window.location.pathname;
 
   const notifyIfChanged = () => {
     if (lastPathname === window.location.pathname) return;
     lastPathname = window.location.pathname;
+    const chatSessionId = getChatSessionIdFromPathname(lastPathname);
+    if (chatSessionId) {
+      bindPendingSingleInjectionSession(chatSessionId);
+    }
     window.postMessage({
       source: 'WebTool-DeepSeek-main',
       type: 'ROUTE_CHANGED',
