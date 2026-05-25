@@ -319,7 +319,7 @@ export default function SettingsPage() {
 
     const exportData: BackupPayload = {
       type: 'webtool-deepseek_backup',
-      version: '0.5.4',
+      version: '0.5.5',
       exportedAt: Date.now(),
       includes: backupSelection,
     };

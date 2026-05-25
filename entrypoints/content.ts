@@ -31,6 +31,7 @@ let currentToolDescriptors: ToolDescriptor[] = [];
 const assistantToolCleanupState = new WeakMap<Element, DomToolCleanupState>();
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
 const resolvedCallRaws = new Set<string>();
+const activeToolExecutions = new Set<Promise<unknown>>();
 
 /**
  * Map of callId -> { call, block, promise } for tracking tool calls
@@ -129,7 +130,7 @@ export default defineContentScript({
           const call = event.data.data as ToolCall;
           let result: ToolCardResult = { ok: true, summary: call.name };
           if (!resolvedCallRaws.has(call.raw)) {
-            result = await executeToolCall(call);
+            result = await trackToolExecution(executeToolCall(call));
             resolvedCallRaws.add(call.raw);
           }
           window.postMessage({
@@ -514,7 +515,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
     // EXECUTE_TOOL_CALL arriving during the round-trip from duplicating.
     resolvedCallRaws.add(call.raw);
     try {
-      const result = await executeToolCall(call);
+      const result = await trackToolExecution(executeToolCall(call));
       if (!entry.resolved) {
         entry.resolved = true;
         updateToolBlockWithResult(entry.block, call, result);
@@ -549,7 +550,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
   // Immediately start execution so the block shows the real result
   // instead of waiting for EXECUTE_TOOL_CALL after response complete
   try {
-    const result = await executeToolCall(call);
+    const result = await trackToolExecution(executeToolCall(call));
     if (!entry.resolved) {
       entry.resolved = true;
       updateToolBlockWithResult(block, call, result);
@@ -568,18 +569,25 @@ async function executeToolCall(call: ToolCall): Promise<ToolCardResult> {
   }
 }
 
+function trackToolExecution<T>(promise: Promise<T>): Promise<T> {
+  activeToolExecutions.add(promise);
+  promise.finally(() => {
+    activeToolExecutions.delete(promise);
+  });
+  return promise;
+}
+
 async function finalizeResponse() {
   // Auto-collapse all blocks, persist, and sync memory list
   const blocks = document.querySelectorAll<HTMLElement>(`.${BLOCK_CLASS}`);
   const hadToolCall = blocks.length > 0;
 
-  blocks.forEach((block) => {
-    // Manual collapse only
-  });
-
   currentToolBlock = null;
 
   if (hadToolCall) {
+    if (activeToolExecutions.size > 0) {
+      await Promise.allSettled([...activeToolExecutions]);
+    }
     persistToolExecutions();
     // Refresh memory list in the side panel
     await refreshMemoryList();
@@ -591,6 +599,7 @@ async function finalizeResponse() {
 function persistToolExecutions() {
   const blocks = document.querySelectorAll<HTMLElement>(`.${BLOCK_CLASS}`);
   const records: ToolCallRestoreRecord[] = [];
+  const assistantMessages = findAssistantMessages();
 
   blocks.forEach((block) => {
     const items = block.querySelectorAll('.dpp-tb-item');
@@ -600,23 +609,33 @@ function persistToolExecutions() {
       const nameEl = item.querySelector('.dpp-tb-item-name');
       const summaryEl = item.querySelector('.dpp-tb-item-summary');
       const dot = item.querySelector('.dpp-tb-dot');
-      const ok = dot?.classList.contains('is-done') ?? true;
+      const isDone = dot?.classList.contains('is-done') ?? false;
+      const isError = dot?.classList.contains('is-error') ?? false;
+      const summary = summaryEl?.textContent || '';
+      if ((!isDone && !isError) || isPendingToolSummary(summary)) return;
 
       executions.push({
         name: nameEl?.textContent || '',
-        result: { ok, summary: summaryEl?.textContent || '', detail: '' },
+        result: { ok: isDone, summary, detail: '' },
       });
     });
 
     if (executions.length > 0) {
+      const assistantMessage = getAssistantMessageRoot(block) as HTMLElement | null;
+      const assistantIndex = assistantMessage ? assistantMessages.indexOf(assistantMessage) : -1;
+      const cleanContent = assistantMessage ? getAssistantMessageVisibleText(assistantMessage) : '';
       records.push({
         id: crypto.randomUUID(),
         calls: [],
         executions,
-        content: '',
+        content: cleanContent,
         source: 'persisted',
         url: window.location.href,
         timestamp: Date.now(),
+        metadata: {
+          cleanContent,
+          ...(assistantIndex >= 0 ? { assistantIndex } : {}),
+        },
       });
     }
   });
@@ -625,6 +644,18 @@ function persistToolExecutions() {
     const key = STORAGE_PREFIX + window.location.pathname;
     safeStorageLocalSet({ [key]: records });
   }
+}
+
+function isPendingToolSummary(value: string): boolean {
+  return value.trim() === '执行中...';
+}
+
+function getAssistantMessageVisibleText(message: HTMLElement): string {
+  const clone = message.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll(`.${BLOCK_CLASS}`).forEach((el) => {
+    el.remove();
+  });
+  return (clone.textContent || '').trim();
 }
 
 async function restorePersistedToolBlocks() {
@@ -692,7 +723,12 @@ function renderRestoredToolBlocks(records: ToolCallRestoreRecord[], attempt = 0)
   const pendingRecords: ToolCallRestoreRecord[] = [];
   const assistantMessages = findAssistantMessages();
   const usedMessages = new Set<HTMLElement>();
-  const restorableRecords = records.filter((record) => record.executions.length > 0);
+  const restorableRecords = records
+    .map((record) => ({
+      ...record,
+      executions: record.executions.filter((exec) => !isPendingToolSummary(exec.result.summary) && !isPendingToolSummary(exec.result.detail || '')),
+    }))
+    .filter((record) => record.executions.length > 0);
 
   if (assistantMessages.length < restorableRecords.length && attempt < 20) {
     setTimeout(() => renderRestoredToolBlocks(records, attempt + 1), 300);
@@ -731,6 +767,7 @@ function findAssistantMessageForToolRecord(
       return normalizedMessageText.includes(normalizedRecordContent) || normalizedRecordContent.includes(normalizedMessageText);
     });
     if (contentMatch) return contentMatch;
+    return null;
   }
 
   const assistantIndex = typeof record.metadata?.assistantIndex === 'number' ? record.metadata.assistantIndex : recordIndex;
@@ -808,6 +845,8 @@ function cleanRenderedToolCalls() {
 }
 
 function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
+  cleanRenderedToolCallElements(assistantMessage);
+
   const walker = document.createTreeWalker(assistantMessage, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = (node as Text).parentElement;
@@ -825,7 +864,8 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
     targets.push(n as Text);
   }
 
-  if (cleanCompleteToolCallsAcrossTextNodes(targets)) {
+  const foundTags = cleanCompleteToolCallsAcrossTextNodes(targets);
+  if (foundTags) {
     assistantToolCleanupState.delete(assistantMessage);
   }
 
@@ -848,6 +888,8 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
     }
   }
 
+  cleanupEmptyMarkdownParagraphs(assistantMessage);
+
   if (state.insideToolBlock) {
     assistantToolCleanupState.set(assistantMessage, state);
   } else {
@@ -855,15 +897,38 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
   }
 }
 
-function cleanCompleteToolCallsAcrossTextNodes(nodes: Text[]): boolean {
-  if (nodes.length === 0) return false;
+function cleanRenderedToolCallElements(assistantMessage: Element): Set<string> | null {
+  const tagNames = new Map(getRecognizedToolTagNames().map((name) => [name.toLowerCase(), name]));
+  if (tagNames.size === 0) return null;
+
+  const foundTags = new Set<string>();
+  assistantMessage.querySelectorAll('*').forEach((element) => {
+    if (element.closest(`.${BLOCK_CLASS}`)) return;
+    const tagName = tagNames.get(element.localName.toLowerCase());
+    if (!tagName) return;
+    foundTags.add(tagName);
+    element.remove();
+  });
+
+  return foundTags.size > 0 ? foundTags : null;
+}
+
+function cleanupEmptyMarkdownParagraphs(assistantMessage: Element) {
+  assistantMessage.querySelectorAll('p.ds-markdown-paragraph').forEach((paragraph) => {
+    if ((paragraph.textContent || '').trim()) return;
+    paragraph.remove();
+  });
+}
+
+function cleanCompleteToolCallsAcrossTextNodes(nodes: Text[]): Set<string> | null {
+  if (nodes.length === 0) return null;
 
   const segments = nodes.map((node) => node.textContent || '');
   const combined = segments.join('');
-  if (!hasPotentialToolMarkup(combined)) return false;
+  if (!hasPotentialToolMarkup(combined)) return null;
 
   const ranges = findCompleteToolRemovalRanges(combined);
-  if (ranges.length === 0) return false;
+  if (ranges.length === 0) return null;
 
   const nodeStarts: number[] = [];
   let offset = 0;
@@ -873,15 +938,18 @@ function cleanCompleteToolCallsAcrossTextNodes(nodes: Text[]): boolean {
   }
 
   let changed = false;
+  const foundTags = new Set<string>();
   nodes.forEach((node, index) => {
     const segment = segments[index];
     const nodeStart = nodeStarts[index];
     const nodeEnd = nodeStart + segment.length;
+
     let next = '';
     let cursor = 0;
 
     for (const range of ranges) {
       if (range.end <= nodeStart || range.start >= nodeEnd) continue;
+      if (range.tagName) foundTags.add(range.tagName);
       const localStart = Math.max(0, range.start - nodeStart);
       const localEnd = Math.min(segment.length, range.end - nodeStart);
       next += segment.slice(cursor, localStart);
@@ -895,7 +963,7 @@ function cleanCompleteToolCallsAcrossTextNodes(nodes: Text[]): boolean {
     }
   });
 
-  return changed;
+  return changed ? foundTags : null;
 }
 
 function findCompleteToolRemovalRanges(text: string): TextRemovalRange[] {
@@ -1375,7 +1443,7 @@ const BLOCK_CSS = `
 /* ── Item Row ────────────────────────────────────────────────── */
 .dpp-tb-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 4px 14px 8px 14px;
   font-size: 13px;
@@ -1463,8 +1531,9 @@ const BLOCK_CSS = `
   font-weight: 500;
   margin-left: 2px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 /* ── Dark Mode ───────────────────────────────────────────────── */

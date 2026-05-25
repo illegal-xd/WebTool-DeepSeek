@@ -238,6 +238,7 @@ entrypoints/
 - [LINUX DO](https://linux.do) — 新一代开源技术社区
 - [System Prompts Leaks](https://github.com/asgeirtj/system_prompts_leaks) - 开源的系统提示词合集库
 - [通往 AGI 之路](https://www.waytoagi.com/zh/prompts) - WayToAGI社区 资源整合知识库
+- [DeepWiki](https://deepwiki.com/) 基于 DeepSeek 知识库/项目 解析能力
 
 ## License
 

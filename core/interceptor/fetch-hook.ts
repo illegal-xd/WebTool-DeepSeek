@@ -505,6 +505,7 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
   let fullText = '';
   let notifiedCount = 0;
   let completed = false;
+  let rawSSEAccumulator = '';
   const displayFilterState: ToolStreamFilterState = { insideToolBlock: false, sseRemainder: '' };
 
   const finalizeIfNeeded = () => {
@@ -525,6 +526,17 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
           if (flushed) {
             controller.enqueue(encoder.encode(flushed));
           }
+          // Flush any remaining raw SSE data not yet added to fullText
+          if (rawSSEAccumulator.trim()) {
+            const tailEvents = parseSSEChunk(rawSSEAccumulator);
+            for (const event of tailEvents) {
+              const parsed = parseSSEData(event.data);
+              if (!parsed) continue;
+              const text = extractTextFromParsed(parsed);
+              if (text) fullText += text;
+            }
+            rawSSEAccumulator = '';
+          }
           finalizeIfNeeded();
           controller.close();
           break;
@@ -536,18 +548,25 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
           controller.enqueue(encoder.encode(filteredChunk));
         }
 
-        const events = parseSSEChunk(chunk);
-        for (const event of events) {
-          const parsed = parseSSEData(event.data);
-          if (!parsed) continue;
-          const text = extractTextFromParsed(parsed);
-          if (text) {
-            fullText += text;
-            notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
-          }
+        // Accumulate raw SSE data to handle events split across chunks
+        rawSSEAccumulator += chunk;
+        const splitIdx = rawSSEAccumulator.lastIndexOf('\n\n');
+        if (splitIdx !== -1) {
+          const completeData = rawSSEAccumulator.slice(0, splitIdx + 2);
+          rawSSEAccumulator = rawSSEAccumulator.slice(splitIdx + 2);
+          const events = parseSSEChunk(completeData);
+          for (const event of events) {
+            const parsed = parseSSEData(event.data);
+            if (!parsed) continue;
+            const text = extractTextFromParsed(parsed);
+            if (text) {
+              fullText += text;
+              notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
+            }
 
-          if (!completed && isStreamFinishedFromParsed(parsed)) {
-            finalizeIfNeeded();
+            if (!completed && isStreamFinishedFromParsed(parsed)) {
+              finalizeIfNeeded();
+            }
           }
         }
       }

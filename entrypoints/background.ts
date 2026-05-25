@@ -272,7 +272,7 @@ async function handleMessage(
     }
 
     case 'GET_CONFIG':
-      return { version: '0.5.4' };
+      return { version: '0.5.5' };
 
     case 'GET_MEMORY_CONFIG':
       return getMemoryConfig();

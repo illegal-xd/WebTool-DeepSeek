@@ -3,7 +3,7 @@ import type { McpCallToolOptions, McpCallToolResult, McpContentBlock, McpInitial
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 
-const CLIENT_INFO = { name: 'WebTool-DeepSeek', version: '0.5.4' };
+const CLIENT_INFO = { name: 'WebTool-DeepSeek', version: '0.5.5' };
 
 export class McpProtocolError extends Error {
   readonly code: string;
