@@ -12,6 +12,7 @@ export default defineContentScript({
   runAt: 'document_start',
   main() {
     installFetchHook();
+    watchRouteChanges();
 
     updateHookState({
       onToolCall(call: ToolCall) {
@@ -125,3 +126,30 @@ export default defineContentScript({
     });
   },
 });
+
+function watchRouteChanges() {
+  let lastPathname = window.location.pathname;
+
+  const notifyIfChanged = () => {
+    if (lastPathname === window.location.pathname) return;
+    lastPathname = window.location.pathname;
+    window.postMessage({
+      source: 'WebTool-DeepSeek-main',
+      type: 'ROUTE_CHANGED',
+      pathname: lastPathname,
+    });
+  };
+
+  const watchHistoryMethod = (method: 'pushState' | 'replaceState') => {
+    const original = history[method];
+    history[method] = function (this: History, ...args) {
+      const result = original.apply(this, args);
+      setTimeout(notifyIfChanged, 0);
+      return result;
+    } as typeof history[typeof method];
+  };
+
+  watchHistoryMethod('pushState');
+  watchHistoryMethod('replaceState');
+  window.addEventListener('popstate', notifyIfChanged);
+}

@@ -46,7 +46,7 @@ let hookState: HookState = {
 let originalFetch: typeof window.fetch | null = null;
 
 /** Cache of the raw history API response, re-processed when MCP tool descriptors arrive late */
-let storedHistoryRaw: unknown = null;
+let storedHistoryRaw: { json: unknown; sessionId: string | null } | null = null;
 
 interface ToolStreamFilterState {
   insideToolBlock: boolean;
@@ -64,8 +64,8 @@ export async function reprocessStoredHistory(): Promise<void> {
   const mcpCount = descriptors.filter((d) => d.provider?.kind === 'mcp').length;
   if (mcpCount === 0) return;
   try {
-    const json = JSON.parse(JSON.stringify(storedHistoryRaw));
-    const { records } = stripToolCallsFromHistoryInternal(json);
+    const json = JSON.parse(JSON.stringify(storedHistoryRaw.json));
+    const { records } = stripToolCallsFromHistoryInternal(json, storedHistoryRaw.sessionId);
     if (records.length > 0) {
       hookState.onToolCallsRestored(records);
     }
@@ -346,13 +346,6 @@ function notifyNewToolCalls(fullText: string, alreadyNotified: number): number {
   return calls.length;
 }
 
-async function executeToolCalls(fullText: string): Promise<void> {
-  const calls = extractToolCalls(fullText, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
-  for (const call of calls) {
-    await hookState.onToolCallExecuted(call);
-  }
-}
-
 function filterSSEChunkForDisplay(chunk: string, state: ToolStreamFilterState): string {
   state.sseRemainder += chunk;
 
@@ -513,8 +506,6 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
     completed = true;
     notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
     hookState.onResponseComplete(fullText);
-    // Execute tool calls after response completes
-    executeToolCalls(fullText).catch(() => {});
   };
 
   const stream = new ReadableStream({
@@ -591,7 +582,6 @@ function setupXHRResponseInterceptor(xhr: XMLHttpRequest) {
     completed = true;
     notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
     hookState.onResponseComplete(fullText);
-    executeToolCalls(fullText).catch(() => {});
   };
 
   xhr.addEventListener('readystatechange', function () {
@@ -634,8 +624,9 @@ function hookHistoryFetch() {
       const clone = response.clone();
       try {
         const json = await clone.json();
-        storedHistoryRaw = json;
-        const { cleaned, records } = stripToolCallsFromHistoryInternal(json);
+        const historySessionId = getHistorySessionIdFromUrl(url);
+        storedHistoryRaw = { json, sessionId: historySessionId };
+        const { cleaned, records } = stripToolCallsFromHistoryInternal(json, historySessionId);
         if (records.length > 0) {
           hookState.onToolCallsRestored(records);
         }
@@ -669,8 +660,9 @@ function hookHistoryXHR() {
         if (this.readyState === 4) {
           try {
             const json = JSON.parse(this.responseText);
-            storedHistoryRaw = json;
-            const { cleaned, records } = stripToolCallsFromHistoryInternal(json);
+            const historySessionId = getHistorySessionIdFromUrl(url);
+            storedHistoryRaw = { json, sessionId: historySessionId };
+            const { cleaned, records } = stripToolCallsFromHistoryInternal(json, historySessionId);
             if (records.length > 0) {
               hookState.onToolCallsRestored(records);
             }
@@ -695,9 +687,10 @@ function hookHistoryXHR() {
   };
 }
 
-function stripToolCallsFromHistoryInternal(json: any): { cleaned: any; records: ToolCallRestoreRecord[] } {
+function stripToolCallsFromHistoryInternal(json: any, fallbackSessionId: string | null = null): { cleaned: any; records: ToolCallRestoreRecord[] } {
   const records: ToolCallRestoreRecord[] = [];
   const cleaned = { ...json };
+  const chatSessionId = getHistorySessionId(cleaned) ?? fallbackSessionId;
 
   if (cleaned.chat_messages && Array.isArray(cleaned.chat_messages)) {
     let assistantIndex = -1;
@@ -726,7 +719,7 @@ function stripToolCallsFromHistoryInternal(json: any): { cleaned: any; records: 
         source: 'history',
         url: '',
         timestamp: Date.now(),
-        metadata: { cleanContent: cleanContent || cleanToolCallSource, assistantIndex },
+        metadata: { cleanContent: cleanContent || cleanToolCallSource, assistantIndex, ...(chatSessionId ? { chatSessionId } : {}) },
       });
 
       return {
@@ -738,6 +731,29 @@ function stripToolCallsFromHistoryInternal(json: any): { cleaned: any; records: 
   }
 
   return { cleaned, records };
+}
+
+function getHistorySessionId(json: any): string | null {
+  const candidates = [
+    json?.chat_session?.id,
+    json?.chat_session_id,
+    json?.biz_data?.chat_session?.id,
+    json?.biz_data?.chat_session_id,
+    json?.data?.chat_session?.id,
+    json?.data?.chat_session_id,
+    json?.chat_messages?.[0]?.chat_session_id,
+    json?.chat_messages?.[0]?.session_id,
+  ];
+  return candidates.find((value) => typeof value === 'string' && value.length > 0) ?? null;
+}
+
+function getHistorySessionIdFromUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url, window.location.origin);
+    return parsed.searchParams.get('chat_session_id') ?? parsed.searchParams.get('chat_session_id[]');
+  } catch {
+    return null;
+  }
 }
 
 function getHistoryToolCallSource(msg: any): string {

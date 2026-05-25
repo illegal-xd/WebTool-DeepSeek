@@ -175,7 +175,12 @@ Token 配额：
 ✅ Token 估算基于 DeepSeek-V3 BPE 分词器校准，公式改为 `chars × 0.25`，估算误差从 4.79x 降至 1.42x  
 ✅ 记忆编辑表单增加权重滑动条（低/中/高三档），实时显示总分计算公式（基值 + 使用频次 + 新鲜度）  
 ✅ 记忆列表、Skill 列表、预设列表增加预估 token 数显示，方便评估注入成本  
-✅ 设置页面增加「注入上下文限制」配置（500~10000 可调，默认 3000），修改后立即生效
+✅ 设置页面增加「注入上下文限制」配置（500~10000 可调，默认 3000），修改后立即生效  
+✅ 增加 MCP 测试模块，需要 python 环境启动【ping、echo、add、stock_tech】更多内容见 MCP/README.md  
+
+<p align="center">
+  <img src="assets/screenshot-mcp-server.png" width="600" alt="mcp 服务">
+</p>
 
 ## 安装
 
@@ -221,10 +226,10 @@ core/
 ├── interceptor/          # 网络拦截（fetch hook、SSE 解析、tool_call 提取）
 ├── memory/               # 记忆系统（存储、评分筛选、prompt 注入）
 ├── tool/                 # 统一工具抽象（descriptor、解析、执行历史、runtime）
-├── mcp/                  # MCP 服务配置、协议 client、工具发现和 transport
 ├── skill/                # 技能系统（内置技能、解析器、注册表）
 ├── preset/               # 系统提示词预设（存储、激活管理）
-└── ui/                   # 技能自动补全弹窗
+├── ui/                   # 技能自动补全弹窗
+└── MCP/                  # 本地 Tiny Test MCP Server，用于验证 stdio、HTTP/SSE/Streamable HTTP 连接、工具发现与调用；
 
 entrypoints/
 ├── background.ts         # Service Worker（消息路由、数据持久化）
