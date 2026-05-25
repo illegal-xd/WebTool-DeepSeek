@@ -14,8 +14,8 @@ const FILTER_TYPES: { key: MemoryType | 'all'; label: string }[] = [
 type MemorySortKey = 'recentlyUpdated' | 'highestWeight' | 'mostUsed';
 
 const SORT_OPTIONS: { key: MemorySortKey; label: string }[] = [
-  { key: 'recentlyUpdated', label: '按最近更新' },
   { key: 'highestWeight', label: '按最高权重' },
+  { key: 'recentlyUpdated', label: '按最近更新' },
   { key: 'mostUsed', label: '按最多使用' },
 ];
 
@@ -23,7 +23,7 @@ export default function MemoryPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [filter, setFilter] = useState<MemoryType | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortKey, setSortKey] = useState<MemorySortKey>('recentlyUpdated');
+  const [sortKey, setSortKey] = useState<MemorySortKey>('highestWeight');
   const [showForm, setShowForm] = useState(false);
   const [editingMemory, setEditingMemory] = useState<Memory | null>(null);
 

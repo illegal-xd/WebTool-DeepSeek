@@ -33,6 +33,7 @@ You MUST strictly follow the above defined tool name and parameter schemas to in
 ## 规则
 - 先正常回复用户，工具调用块附在回复最末尾
 - 支持一次操作多条记忆（输出多个 invoke 块）
+- 记忆内容需要再不丢失用户意图的情况下尽可能简短
 - 如果用户意图模糊，先确认再操作`,
     source: 'builtin',
     memoryEnabled: true,

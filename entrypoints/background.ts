@@ -44,6 +44,7 @@ import {
   saveConversationCategory,
   unassignSessionsFromCategory,
 } from '../core/conversation/store';
+import { getMemoryConfig, saveMemoryConfig, type MemoryConfig } from '../core/memory/config';
 import type { BackgroundConfig, ConversationCategory, ConversationMessage, ConversationSession, McpServerCreateInput, McpServerUpdateInput, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset, ToolCall } from '../core/types';
 
 const NEW_CHAT_URL = 'https://chat.deepseek.com/a/chat';
@@ -272,6 +273,15 @@ async function handleMessage(
 
     case 'GET_CONFIG':
       return { version: '0.5.3' };
+
+    case 'GET_MEMORY_CONFIG':
+      return getMemoryConfig();
+
+    case 'SET_MEMORY_CONFIG': {
+      await saveMemoryConfig(message.payload as MemoryConfig);
+      await broadcastToTabs({ type: 'MEMORY_CONFIG_UPDATED', tokenBudget: (message.payload as MemoryConfig).tokenBudget }, sender.tab?.id);
+      return { ok: true };
+    }
 
     case 'GET_MODEL_TYPE':
       return getModelType();

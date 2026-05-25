@@ -1,6 +1,6 @@
 export const DEEPSEEK_API_URL = 'https://chat.deepseek.com/api/v0/chat/completion';
 
-export const MEMORY_TOKEN_BUDGET = 1500;
+export const MEMORY_TOKEN_BUDGET = 3000;
 
 export const MSG_PREFIX = 'DEEPSEEK_PP';
 

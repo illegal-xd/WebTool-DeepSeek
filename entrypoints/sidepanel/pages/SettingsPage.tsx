@@ -104,6 +104,7 @@ export default function SettingsPage() {
   const [syncMessage, setSyncMessage] = useState('');
   const [backupSelection, setBackupSelection] = useState<BackupSelection>(DEFAULT_BACKUP_SELECTION);
   const [expertMode, setExpertMode] = useState(false);
+  const [memoryTokenBudget, setMemoryTokenBudget] = useState(3000);
   const [bgEnabled, setBgEnabled] = useState(false);
   const [bgType, setBgType] = useState<'upload' | 'url'>('upload');
   const [bgUrl, setBgUrl] = useState('');
@@ -149,6 +150,9 @@ export default function SettingsPage() {
       setBgImageData(cfg.imageData ?? '');
       setBgOpacity(cfg.opacity);
     });
+    chrome.runtime.sendMessage({ type: 'GET_MEMORY_CONFIG' }).then((cfg: { tokenBudget: number } | null) => {
+      if (cfg) setMemoryTokenBudget(cfg.tokenBudget);
+    });
   }, []);
 
   const handleExpertToggle = async (enabled: boolean) => {
@@ -157,6 +161,12 @@ export default function SettingsPage() {
       type: 'SET_MODEL_TYPE',
       payload: enabled ? 'expert' : null,
     });
+  };
+
+  const handleMemoryTokenBudgetChange = async (val: number) => {
+    const clamped = Math.max(500, Math.min(10000, val));
+    setMemoryTokenBudget(clamped);
+    await chrome.runtime.sendMessage({ type: 'SET_MEMORY_CONFIG', payload: { tokenBudget: clamped } });
   };
 
   const saveBgConfig = async (patch: Partial<BackgroundConfig>) => {
@@ -618,7 +628,7 @@ export default function SettingsPage() {
           模型设置
         </h2>
 
-        <div className="ds-surface-panel rounded-xl p-4">
+        <div className="ds-surface-panel rounded-xl p-4 space-y-3">
           <div className="flex justify-between items-center">
             <div>
               <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
@@ -642,6 +652,48 @@ export default function SettingsPage() {
                 }}
               />
             </button>
+          </div>
+
+          <div className="border-t pt-3" style={{ borderColor: 'var(--ds-border)' }}>
+            <div className="flex items-center justify-between mb-1.5">
+              <label htmlFor="memory-token-budget" className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                注入上下文限制
+              </label>
+              <span className="text-[11px] font-mono tabular-nums" style={{ color: 'var(--ds-text-tertiary)' }}>
+                {memoryTokenBudget}
+              </span>
+            </div>
+            <div className="text-[11px] mb-2" style={{ color: 'var(--ds-text-tertiary)' }}>
+              记忆注入的最大 Token 预算（影响注入数量），范围 500 ~ 10000
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                id="memory-token-budget"
+                type="range"
+                min="500"
+                max="10000"
+                step="100"
+                value={memoryTokenBudget}
+                onChange={(e) => handleMemoryTokenBudgetChange(parseInt(e.target.value))}
+                className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, var(--ds-blue) ${((memoryTokenBudget - 500) / 9500) * 100}%, var(--ds-border) ${((memoryTokenBudget - 500) / 9500) * 100}%)`,
+                }}
+              />
+              <input
+                type="number"
+                min="500"
+                max="10000"
+                step="100"
+                value={memoryTokenBudget}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value);
+                  if (!isNaN(v)) handleMemoryTokenBudgetChange(v);
+                }}
+                className="w-20 px-2 py-1.5 text-xs rounded-lg border text-center tabular-nums outline-none transition-colors focus:border-[var(--ds-blue)]"
+                style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
+              />
+            </div>
           </div>
         </div>
       </section>

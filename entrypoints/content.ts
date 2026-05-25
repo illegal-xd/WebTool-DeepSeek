@@ -184,11 +184,28 @@ export default defineContentScript({
       applyBackground(cfg);
     });
 
+    safeRuntimeSendMessage<{ tokenBudget: number }>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
+      if (cfg) {
+        window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', tokenBudget: cfg.tokenBudget });
+      }
+    });
+
     safeRuntimeOnMessage((message) => {
       if (message.type === 'STATE_UPDATED') {
         currentToolDescriptors = message.toolDescriptors ?? [];
         syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType, currentToolDescriptors);
+        // Also refresh memory config in case it was changed
+        safeRuntimeSendMessage<{ tokenBudget: number }>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
+          if (cfg) {
+            window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', tokenBudget: cfg.tokenBudget });
+          }
+        });
         cleanRenderedToolCalls();
+      } else if (message.type === 'MEMORY_CONFIG_UPDATED') {
+        const { tokenBudget } = message as { tokenBudget: number };
+        if (typeof tokenBudget === 'number' && tokenBudget > 0) {
+          window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', tokenBudget });
+        }
       } else if (message.type === 'TOOL_DESCRIPTORS_UPDATED') {
         safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }).then((descriptors) => {
           currentToolDescriptors = descriptors ?? [];
@@ -243,6 +260,7 @@ function syncToMainWorld(
   activePreset: SystemPromptPreset | null,
   modelType: ModelType,
   toolDescriptors: ToolDescriptor[],
+  memoryTokenBudget?: number,
 ) {
   window.postMessage({
     source: 'WebTool-DeepSeek-content',
@@ -253,6 +271,7 @@ function syncToMainWorld(
     activePreset,
     modelType,
     toolDescriptors,
+    memoryTokenBudget,
   });
 }
 
@@ -490,11 +509,14 @@ async function handleToolCall(call: ToolCall, callId: number) {
     }
     const entry = { call, block: currentToolBlock, callId, resolved: false };
     pendingCallMap.set(callId, entry);
+
+    // Optimistic dedup: mark raw BEFORE async executeToolCall to prevent
+    // EXECUTE_TOOL_CALL arriving during the round-trip from duplicating.
+    resolvedCallRaws.add(call.raw);
     try {
       const result = await executeToolCall(call);
       if (!entry.resolved) {
         entry.resolved = true;
-        resolvedCallRaws.add(call.raw);
         updateToolBlockWithResult(entry.block, call, result);
       }
     } catch {
@@ -520,13 +542,16 @@ async function handleToolCall(call: ToolCall, callId: number) {
   const entry = { call, block, callId, resolved: false };
   pendingCallMap.set(callId, entry);
 
+  // Optimistic dedup: mark raw BEFORE async executeToolCall to prevent
+  // EXECUTE_TOOL_CALL arriving during the round-trip from duplicating.
+  resolvedCallRaws.add(call.raw);
+
   // Immediately start execution so the block shows the real result
   // instead of waiting for EXECUTE_TOOL_CALL after response complete
   try {
     const result = await executeToolCall(call);
     if (!entry.resolved) {
       entry.resolved = true;
-      resolvedCallRaws.add(call.raw);
       updateToolBlockWithResult(block, call, result);
     }
   } catch {

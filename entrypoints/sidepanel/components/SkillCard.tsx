@@ -1,4 +1,5 @@
 import type { Skill } from '../../../core/types';
+import { estimateTokens } from '../../../core/memory/selector';
 import { SVG_PATHS } from '../constants';
 
 interface Props {
@@ -15,6 +16,7 @@ const SOURCE_LABELS: Record<string, { text: string; className: string }> = {
 
 export default function SkillCard({ skill, onEdit, onDelete }: Props) {
   const badge = SOURCE_LABELS[skill.source];
+  const tokenEstimate = estimateTokens(skill.instructions || skill.description || '');
 
   return (
     <div className="ds-card rounded-xl p-3.5 group">
@@ -51,14 +53,19 @@ export default function SkillCard({ skill, onEdit, onDelete }: Props) {
       <p className="text-xs mt-1.5 leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
         {skill.description}
       </p>
-      {skill.memoryEnabled && (
-        <span className="ds-badge-success inline-flex items-center gap-1 mt-2 text-[10px] px-2 py-0.5 rounded-full font-medium">
-          <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d={SVG_PATHS.chip} />
-          </svg>
-          含记忆注入
+      <div className="flex items-center gap-2 mt-2">
+        <span className="text-[10px] tabular-nums" style={{ color: 'var(--ds-text-quaternary, #9ca3af)' }}>
+          ≈ {tokenEstimate} tokens
         </span>
-      )}
+        {skill.memoryEnabled && (
+          <span className="ds-badge-success inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium">
+            <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d={SVG_PATHS.chip} />
+            </svg>
+            含记忆注入
+          </span>
+        )}
+      </div>
     </div>
   );
 }

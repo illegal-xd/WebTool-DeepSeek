@@ -16,6 +16,7 @@ interface HookState {
   modelType: ModelType;
   toolDescriptors: ToolDescriptor[];
   recognizedToolTags: string[];
+  memoryTokenBudget: number;
   _lastChatSessionId: string | null;
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
@@ -32,6 +33,7 @@ let hookState: HookState = {
   modelType: null,
   toolDescriptors: [],
   recognizedToolTags: [...DEFAULT_RECOGNIZED_TOOL_TAGS],
+  memoryTokenBudget: 3000,
   _lastChatSessionId: null,
   onToolCall: () => {},
   onResponseComplete: () => {},
@@ -182,7 +184,7 @@ function modifyRequestBody(bodyStr: string): string | null {
       const targetMemories = resolveTargetMemories(memorySources);
 
       if (targetMemories.length > 0) {
-        const { augmented } = buildAugmentedPrompt(prompt, targetMemories, { thinkingEnabled, toolDescriptors: hookState.toolDescriptors });
+        const { augmented } = buildAugmentedPrompt(prompt, targetMemories, { thinkingEnabled, toolDescriptors: hookState.toolDescriptors, tokenBudget: hookState.memoryTokenBudget });
         prompt = augmented;
       }
 
@@ -210,6 +212,7 @@ function modifyRequestBody(bodyStr: string): string | null {
   const { augmented, usedMemoryIds } = buildAugmentedPrompt(originalPrompt, targetMemories, {
     thinkingEnabled,
     identityOnly,
+    tokenBudget: hookState.memoryTokenBudget,
     toolDescriptors: hookState.toolDescriptors,
   });
   body.prompt = presetPrefix + augmented;

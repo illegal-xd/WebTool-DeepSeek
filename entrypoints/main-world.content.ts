@@ -82,7 +82,7 @@ export default defineContentScript({
 
       switch (event.data.type) {
         case 'SYNC_STATE': {
-          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags } = event.data as {
+          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget } = event.data as {
             memories: Memory[];
             skills: Skill[];
             presets: SystemPromptPreset[];
@@ -90,6 +90,7 @@ export default defineContentScript({
             modelType: ModelType;
             toolDescriptors?: ToolDescriptor[];
             recognizedToolTags?: string[];
+            memoryTokenBudget?: number;
           };
           updateHookState({
             memories,
@@ -98,6 +99,7 @@ export default defineContentScript({
             modelType,
             toolDescriptors: toolDescriptors ?? [],
             recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS],
+            ...(memoryTokenBudget !== undefined ? { memoryTokenBudget } : {}),
           });
           reprocessStoredHistory();
           initSkillPopup(skills);
@@ -110,6 +112,13 @@ export default defineContentScript({
           const { toolDescriptors, recognizedToolTags } = event.data as { toolDescriptors?: ToolDescriptor[]; recognizedToolTags?: string[] };
           updateHookState({ toolDescriptors: toolDescriptors ?? [], recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS] });
           reprocessStoredHistory();
+          break;
+        }
+        case 'MEMORY_CONFIG_UPDATED': {
+          const { tokenBudget } = event.data as { tokenBudget: number };
+          if (typeof tokenBudget === 'number' && tokenBudget > 0) {
+            updateHookState({ memoryTokenBudget: tokenBudget });
+          }
           break;
         }
       }

@@ -7,6 +7,7 @@ export interface AugmentOptions {
   thinkingEnabled?: boolean;
   identityOnly?: boolean;
   toolDescriptors?: readonly ToolDescriptor[];
+  tokenBudget?: number;
 }
 
 export function buildAugmentedPrompt(
@@ -14,10 +15,10 @@ export function buildAugmentedPrompt(
   allMemories: Memory[],
   options?: AugmentOptions,
 ): { augmented: string; usedMemoryIds: number[] } {
-  const { thinkingEnabled = false, identityOnly = false, toolDescriptors = DEFAULT_TOOL_DESCRIPTORS } = options ?? {};
+  const { thinkingEnabled = false, identityOnly = false, toolDescriptors = DEFAULT_TOOL_DESCRIPTORS, tokenBudget } = options ?? {};
 
   const promptTokens = estimateTokens(originalPrompt);
-  const budget = getMemoryBudget(promptTokens);
+  const budget = getMemoryBudget(promptTokens, tokenBudget);
 
   const selected = selectMemories(originalPrompt, allMemories, { budget, identityOnly });
   const memBlock = formatMemoriesBlock(selected);

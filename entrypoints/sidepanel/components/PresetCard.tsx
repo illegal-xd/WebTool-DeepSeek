@@ -1,4 +1,5 @@
 import type { SystemPromptPreset } from '../../../core/types';
+import { estimateTokens } from '../../../core/memory/selector';
 
 interface Props {
   preset: SystemPromptPreset;
@@ -10,6 +11,8 @@ interface Props {
 }
 
 export default function PresetCard({ preset, isActive, onActivate, onDeactivate, onEdit, onDelete }: Props) {
+  const tokenEstimate = estimateTokens(preset.content || '');
+
   return (
     <div
       className="ds-card rounded-xl p-3.5 group transition-all duration-150"
@@ -70,6 +73,9 @@ export default function PresetCard({ preset, isActive, onActivate, onDeactivate,
       >
         {preset.content.slice(0, 120)}{preset.content.length > 120 ? '...' : ''}
       </p>
+      <div className="mt-2 text-[10px] tabular-nums" style={{ color: 'var(--ds-text-quaternary, #9ca3af)' }}>
+        ≈ {tokenEstimate} tokens
+      </div>
     </div>
   );
 }

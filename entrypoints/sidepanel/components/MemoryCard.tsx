@@ -1,4 +1,5 @@
 import type { Memory } from '../../../core/types';
+import { estimateTokens, formatMemoryLine } from '../../../core/memory/selector';
 import { MEMORY_TYPE_MAP, SVG_PATHS } from '../constants';
 
 interface Props {
@@ -11,6 +12,7 @@ interface Props {
 export default function MemoryCard({ memory, onDelete, onEdit, onTogglePin }: Props) {
   const typeInfo = MEMORY_TYPE_MAP[memory.type] ?? MEMORY_TYPE_MAP.topic;
   const age = formatAge(memory.createdAt);
+  const estimatedTokens = estimateTokens(formatMemoryLine(memory));
 
   return (
     <div className="ds-card rounded-xl p-3.5 group animate-fade-in">
@@ -59,6 +61,11 @@ export default function MemoryCard({ memory, onDelete, onEdit, onTogglePin }: Pr
       <p className="text-xs mt-2 line-clamp-2 leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
         {memory.content}
       </p>
+
+      {/* Estimated token cost */}
+      <div className="mt-2 text-[10px] tabular-nums" style={{ color: 'var(--ds-text-quaternary, #9ca3af)' }}>
+        ≈ {estimatedTokens} tokens
+      </div>
 
       <div className="flex items-center justify-between mt-2.5">
         <div className="flex gap-1 flex-wrap">
