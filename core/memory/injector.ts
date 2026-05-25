@@ -8,6 +8,7 @@ export interface AugmentOptions {
   identityOnly?: boolean;
   toolDescriptors?: readonly ToolDescriptor[];
   tokenBudget?: number;
+  instructionBlock?: string;
 }
 
 export function buildAugmentedPrompt(
@@ -15,7 +16,7 @@ export function buildAugmentedPrompt(
   allMemories: Memory[],
   options?: AugmentOptions,
 ): { augmented: string; usedMemoryIds: number[] } {
-  const { thinkingEnabled = false, identityOnly = false, toolDescriptors = DEFAULT_TOOL_DESCRIPTORS, tokenBudget } = options ?? {};
+  const { thinkingEnabled = false, identityOnly = false, toolDescriptors = DEFAULT_TOOL_DESCRIPTORS, tokenBudget, instructionBlock } = options ?? {};
 
   const promptTokens = estimateTokens(originalPrompt);
   const budget = getMemoryBudget(promptTokens, tokenBudget);
@@ -29,7 +30,7 @@ export function buildAugmentedPrompt(
     .replace('{{tools}}', renderToolSchemas(toolDescriptors));
 
   return {
-    augmented: system + originalPrompt + renderToolFormatReminder(toolDescriptors),
+    augmented: system + (instructionBlock ? instructionBlock + '\n\n---\n\n' : '') + originalPrompt + renderToolFormatReminder(toolDescriptors),
     usedMemoryIds: selected.map((m) => m.id!).filter(Boolean),
   };
 }

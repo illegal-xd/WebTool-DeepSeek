@@ -154,8 +154,8 @@ function modifyRequestBody(bodyStr: string): string | null {
 
   const shouldInjectPreset = Boolean(hookState.activePreset);
 
-  const presetPrefix = shouldInjectPreset
-    ? hookState.activePreset!.content + '\n\n---\n\n'
+  const presetInstruction = shouldInjectPreset
+    ? hookState.activePreset!.content
     : '';
 
   if (hookState.modelType) {
@@ -165,9 +165,15 @@ function modifyRequestBody(bodyStr: string): string | null {
   const memInvocation = parseMemoryCommand(originalPrompt, hookState.memories);
   if (memInvocation) {
     const { memory, args } = memInvocation;
-    const prompt = wrapMemoryInput(memory.name, memory.content, args);
+    const memoryInstruction = wrapMemoryInput(memory.name, memory.content, '');
+    const { augmented } = buildAugmentedPrompt(args, [], {
+      thinkingEnabled,
+      tokenBudget: hookState.memoryTokenBudget,
+      toolDescriptors: hookState.toolDescriptors,
+      instructionBlock: joinInstructionBlocks(presetInstruction, memoryInstruction),
+    });
 
-    body.prompt = presetPrefix + prompt;
+    body.prompt = augmented;
     if (memory.id != null) {
       hookState.onMemoriesUsed([memory.id]);
     }
@@ -178,17 +184,19 @@ function modifyRequestBody(bodyStr: string): string | null {
   if (invocation) {
     const resolved = resolveSkills(invocation.skillName, invocation.args);
     if (resolved) {
-      let prompt = resolved.combinedPrompt;
-
       const memorySources = collectMemorySources(resolved);
       const targetMemories = resolveTargetMemories(memorySources);
+      const { augmented, usedMemoryIds } = buildAugmentedPrompt(resolved.userInput, targetMemories, {
+        thinkingEnabled,
+        tokenBudget: hookState.memoryTokenBudget,
+        toolDescriptors: hookState.toolDescriptors,
+        instructionBlock: joinInstructionBlocks(presetInstruction, resolved.instructions),
+      });
 
-      if (targetMemories.length > 0) {
-        const { augmented } = buildAugmentedPrompt(prompt, targetMemories, { thinkingEnabled, toolDescriptors: hookState.toolDescriptors, tokenBudget: hookState.memoryTokenBudget });
-        prompt = augmented;
+      body.prompt = augmented;
+      if (usedMemoryIds.length > 0) {
+        hookState.onMemoriesUsed(usedMemoryIds);
       }
-
-      body.prompt = presetPrefix + prompt;
       hookState.onSkillUsed(invocation.skillName);
       return JSON.stringify(body);
     }
@@ -214,8 +222,9 @@ function modifyRequestBody(bodyStr: string): string | null {
     identityOnly,
     tokenBudget: hookState.memoryTokenBudget,
     toolDescriptors: hookState.toolDescriptors,
+    instructionBlock: presetInstruction,
   });
-  body.prompt = presetPrefix + augmented;
+  body.prompt = augmented;
 
   if (usedMemoryIds.length > 0) {
     hookState.onMemoriesUsed(usedMemoryIds);
@@ -272,13 +281,14 @@ function resolveTargetMemories(source: MemorySourceResult): Memory[] {
 }
 
 interface ResolvedSkills {
-  combinedPrompt: string;
+  instructions: string;
+  userInput: string;
   memoryEnabled: boolean;
   memoryIds?: number[];
 }
 
-function wrapUserInput(instructions: string, userInput: string): string {
-  return `${instructions}\n\n---\n\n以下是用户本次的输入，请根据上述指令处理：\n\n${userInput}`;
+function joinInstructionBlocks(...blocks: string[]): string {
+  return blocks.map((block) => block.trim()).filter(Boolean).join('\n\n---\n\n');
 }
 
 function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
@@ -289,7 +299,6 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
   if (secondInvocation) {
     const secondSkill = hookState.skills.find((s) => s.name === secondInvocation.skillName);
     if (secondSkill) {
-      const userArgs = secondInvocation.args;
       const combinedInstructions = primarySkill.instructions + '\n\n---\n\n' + secondSkill.instructions;
 
       const anyMemoryEnabled = primarySkill.memoryEnabled || secondSkill.memoryEnabled;
@@ -314,9 +323,8 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
       }
 
       return {
-        combinedPrompt: userArgs
-          ? wrapUserInput(combinedInstructions, userArgs)
-          : combinedInstructions,
+        instructions: combinedInstructions,
+        userInput: secondInvocation.args,
         memoryEnabled: anyMemoryEnabled,
         memoryIds: mergedMemoryIds,
       };
@@ -324,9 +332,8 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
   }
 
   return {
-    combinedPrompt: args
-      ? wrapUserInput(primarySkill.instructions, args)
-      : primarySkill.instructions,
+    instructions: primarySkill.instructions,
+    userInput: args,
     memoryEnabled: primarySkill.memoryEnabled,
     memoryIds: primarySkill.memoryEnabled && primarySkill.memoryIds && primarySkill.memoryIds.length > 0
       ? primarySkill.memoryIds
