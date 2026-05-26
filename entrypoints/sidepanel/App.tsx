@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { APP_VERSION } from '../../config.js';
+import { getFeatureVisibility, subscribeFeatureVisibility, type FeatureVisibility } from './feature-visibility';
 import MemoryPage from './pages/MemoryPage';
 import SkillPage from './pages/SkillPage';
 import PresetPage from './pages/PresetPage';
@@ -21,6 +22,20 @@ const TABS: { key: Tab; label: string; icon: string }[] = [
 export default function App() {
   const [tab, setTab] = useState<Tab>('memory');
   const [conversationRefreshKey, setConversationRefreshKey] = useState(0);
+  const [featureVisibility, setFeatureVisibilityState] = useState<FeatureVisibility>(() => getFeatureVisibility());
+
+  useEffect(() => subscribeFeatureVisibility(setFeatureVisibilityState), []);
+
+  const visibleTabs = useMemo(() => TABS.filter((item) => {
+    if (item.key === 'conversation') return featureVisibility.conversation;
+    if (item.key === 'mcp') return featureVisibility.mcp;
+    return true;
+  }), [featureVisibility]);
+
+  useEffect(() => {
+    if (tab === 'conversation' && !featureVisibility.conversation) setTab('memory');
+    if (tab === 'mcp' && !featureVisibility.mcp) setTab('memory');
+  }, [featureVisibility, tab]);
 
   return (
     <div className="flex flex-col h-screen" style={{ background: 'var(--ds-bg)' }}>
@@ -48,7 +63,7 @@ export default function App() {
         className="flex px-3 gap-0.5 pt-1"
         style={{ borderBottom: '1px solid var(--ds-border)' }}
       >
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             type="button"
             key={t.key}
@@ -85,8 +100,8 @@ export default function App() {
         {tab === 'memory' && <MemoryPage />}
         {tab === 'skill' && <SkillPage />}
         {tab === 'preset' && <PresetPage />}
-        {tab === 'conversation' && <ConversationPage key={conversationRefreshKey} />}
-        {tab === 'mcp' && <McpPage />}
+        {tab === 'conversation' && featureVisibility.conversation && <ConversationPage key={conversationRefreshKey} />}
+        {tab === 'mcp' && featureVisibility.mcp && <McpPage />}
         {tab === 'settings' && <SettingsPage />}
       </main>
     </div>

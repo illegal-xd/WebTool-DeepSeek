@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../../../config.js';
 import type { MemoryConfig } from '../../../core/memory/config';
+import { getFeatureVisibility, setFeatureVisibility, subscribeFeatureVisibility, type FeatureVisibility } from '../feature-visibility';
 import type { BackgroundConfig, McpServerConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
 import { useTheme } from '../../../hooks/useTheme';
 import type { ThemePreference } from '../../../lib/ThemeContext';
@@ -108,6 +109,7 @@ export default function SettingsPage() {
   const [expertMode, setExpertMode] = useState(false);
   const [memoryTokenBudget, setMemoryTokenBudget] = useState(3000);
   const [singleMemoryInjection, setSingleMemoryInjection] = useState(false);
+  const [featureVisibility, setFeatureVisibilityState] = useState<FeatureVisibility>(() => getFeatureVisibility());
   const [bgEnabled, setBgEnabled] = useState(false);
   const [bgType, setBgType] = useState<'upload' | 'url'>('upload');
   const [bgUrl, setBgUrl] = useState('');
@@ -160,6 +162,8 @@ export default function SettingsPage() {
     });
   }, []);
 
+  useEffect(() => subscribeFeatureVisibility(setFeatureVisibilityState), []);
+
   const handleExpertToggle = async (enabled: boolean) => {
     setExpertMode(enabled);
     await chrome.runtime.sendMessage({
@@ -183,6 +187,12 @@ export default function SettingsPage() {
       type: 'SET_MEMORY_CONFIG',
       payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled },
     });
+  };
+
+  const handleFeatureVisibilityChange = (key: keyof FeatureVisibility, enabled: boolean) => {
+    const next = { ...featureVisibility, [key]: enabled };
+    setFeatureVisibilityState(next);
+    setFeatureVisibility(next);
   };
 
   const saveBgConfig = async (patch: Partial<BackgroundConfig>) => {
@@ -635,6 +645,73 @@ export default function SettingsPage() {
                 )}
               </div>
             )}
+          </div>
+
+          <div className="border-t pt-3 space-y-3" style={{ borderColor: 'var(--ds-border)' }}>
+            <div className="px-2">
+              <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                功能分栏
+              </div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                控制侧边栏顶部功能入口显示
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center px-2">
+              <div>
+                <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                  对话处理
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                  展示对话管理分栏
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleFeatureVisibilityChange('conversation', !featureVisibility.conversation)}
+                aria-pressed={featureVisibility.conversation}
+                aria-label="切换对话处理分栏"
+                className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
+                style={{
+                  background: featureVisibility.conversation ? 'var(--ds-blue)' : 'var(--ds-border)',
+                }}
+              >
+                <span
+                  className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                  style={{
+                    transform: featureVisibility.conversation ? 'translateX(18px)' : 'translateX(0)',
+                  }}
+                />
+              </button>
+            </div>
+
+            <div className="flex justify-between items-center px-2">
+              <div>
+                <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                  MCP 服务
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                  展示 MCP 工具分栏
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleFeatureVisibilityChange('mcp', !featureVisibility.mcp)}
+                aria-pressed={featureVisibility.mcp}
+                aria-label="切换 MCP 服务分栏"
+                className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
+                style={{
+                  background: featureVisibility.mcp ? 'var(--ds-blue)' : 'var(--ds-border)',
+                }}
+              >
+                <span
+                  className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                  style={{
+                    transform: featureVisibility.mcp ? 'translateX(18px)' : 'translateX(0)',
+                  }}
+                />
+              </button>
+            </div>
           </div>
         </div>
       </section>
