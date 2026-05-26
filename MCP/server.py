@@ -10,24 +10,56 @@ Technical indicators (MACD/RSI/KDJ/BOLL/量比) are calculated from K-line data.
 
 from __future__ import annotations
 
+import atexit
+import asyncio
 import json
+import os
 import re
 import ssl
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+from tools import search, shell
+from tools.mcp_external import ExternalMCPError, ExternalMCPProxy
 
 
 SERVER_NAME = "tiny-test-mcp"
 SERVER_VERSION = "0.2.0"
 PROTOCOL_VERSION = "2024-11-05"
+ROOT = Path(__file__).resolve().parent
 
 
-TOOLS: list[dict[str, Any]] = [
+def load_json_file(env_name: str, default_name: str) -> dict[str, Any]:
+    config_path = Path(os.environ.get(env_name) or ROOT / default_name)
+    if not config_path.exists():
+        return {}
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def merge_mcp_servers(*configs: dict[str, Any]) -> dict[str, Any]:
+    servers: dict[str, Any] = {}
+    for config in configs:
+        mcp_servers = config.get("mcpServers")
+        if isinstance(mcp_servers, dict):
+            servers.update(mcp_servers)
+    return servers
+
+
+PRESETS = load_json_file("MCP_PRESETS_PATH", "presets.json")
+CONFIG = load_json_file("MCP_CONFIG_PATH", "mcp.json")
+
+
+CORE_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ping",
-        "description": "Return a pong response with the current server timestamp.",
+        "description": "返回 pong 与服务端当前时间，用于验证 MCP 服务是否可用。",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -36,13 +68,13 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "echo",
-        "description": "Echo back the provided message. Useful for validating argument passing.",
+        "description": "回显传入文本，用于验证 MCP 工具参数传递是否正常。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "Text to echo back.",
+                    "description": "要回显的文本。",
                 }
             },
             "required": ["message"],
@@ -51,12 +83,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "add",
-        "description": "Add two numbers and return the sum.",
+        "description": "计算两个数字之和，并返回结构化结果。",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "a": {"type": "number", "description": "First number."},
-                "b": {"type": "number", "description": "Second number."},
+                "a": {"type": "number", "description": "第一个数字。"},
+                "b": {"type": "number", "description": "第二个数字。"},
             },
             "required": ["a", "b"],
             "additionalProperties": False,
@@ -82,6 +114,41 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+def service_config(name: str) -> dict[str, Any]:
+    services = CONFIG.get("services")
+    if not isinstance(services, dict):
+        return {}
+    config = services.get(name)
+    return config if isinstance(config, dict) else {}
+
+
+def service_tools(name: str, definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    config = service_config(name)
+    if config.get("enabled") is False:
+        return []
+    configured_tools = config.get("tools")
+    if isinstance(configured_tools, list):
+        names = {item for item in configured_tools if isinstance(item, str)}
+        return [tool for tool in definitions if tool.get("name") in names]
+    return list(definitions)
+
+
+def service_tool_config(name: str) -> dict[str, Any]:
+    config = service_config(name).get("config")
+    return config if isinstance(config, dict) else {}
+
+
+TOOLS: list[dict[str, Any]] = [
+    *CORE_TOOL_DEFINITIONS,
+    *service_tools("shell", shell.TOOL_DEFINITIONS),
+    *service_tools("web_search", search.TOOL_DEFINITIONS),
+]
+ENABLED_TOOL_NAMES = {tool["name"] for tool in TOOLS if isinstance(tool.get("name"), str)}
+EXTERNAL_PROXY = ExternalMCPProxy(ENABLED_TOOL_NAMES)
+EXTERNAL_PROXY.load_config(merge_mcp_servers(PRESETS, CONFIG))
+atexit.register(EXTERNAL_PROXY.stop_all)
 
 
 class McpError(Exception):
@@ -478,6 +545,10 @@ def text_result(text: str, structured_content: dict[str, Any] | None = None) -> 
     return result
 
 
+def get_tools() -> list[dict[str, Any]]:
+    return [*TOOLS, *EXTERNAL_PROXY.get_all_tools()]
+
+
 def handle_initialize(params: dict[str, Any]) -> dict[str, Any]:
     client_protocol = params.get("protocolVersion")
     return {
@@ -490,6 +561,12 @@ def handle_initialize(params: dict[str, Any]) -> dict[str, Any]:
 def handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     arguments = optional_object(params.get("arguments"), "arguments")
+
+    if isinstance(name, str) and name in EXTERNAL_PROXY.get_all_tool_names():
+        try:
+            return EXTERNAL_PROXY.call_tool(name, arguments)
+        except ExternalMCPError as error:
+            raise McpError(error.code, error.message) from error
 
     if name == "ping":
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -517,6 +594,18 @@ def handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
             raise McpError(-32602, "stock_tech requires a string argument 'symbol'")
         return _handle_stock_tech(symbol.strip())
 
+    if shell.is_tool_name(name) and name in ENABLED_TOOL_NAMES:
+        try:
+            return shell.call_tool(name, arguments)
+        except shell.ShellToolError as error:
+            raise McpError(error.code, error.message) from error
+
+    if search.is_tool_name(name) and name in ENABLED_TOOL_NAMES:
+        try:
+            return asyncio.run(search.call_tool(name, arguments, service_tool_config("web_search")))
+        except search.SearchToolError as error:
+            raise McpError(error.code, error.message) from error
+
     raise McpError(-32601, f"Unknown tool: {name}")
 
 
@@ -542,7 +631,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
         if method == "initialize":
             return success(request_id, handle_initialize(params))
         if method == "tools/list":
-            return success(request_id, {"tools": TOOLS})
+            return success(request_id, {"tools": get_tools()})
         if method == "tools/call":
             return success(request_id, handle_tools_call(params))
         raise McpError(-32601, f"Method not found: {method}")

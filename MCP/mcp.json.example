@@ -1,0 +1,28 @@
+{
+  "services": {
+    "shell": {
+      "type": "builtin",
+      "tools": ["execute_command", "get_cwd", "list_directory", "read_file", "write_file"]
+    },
+    "web_search": {
+      "type": "builtin",
+      "tools": ["bing_search", "crawl_webpage"],
+      "config": {
+        "bing_api_key": "YOUR_BING_API_KEY_HERE"
+      }
+    }
+  },
+  "mcpServers": {
+    "example_stdio": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/path/to/server.py"],
+      "env": {}
+    },
+    "example_http": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": {}
+    }
+  }
+}

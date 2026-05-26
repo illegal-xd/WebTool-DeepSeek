@@ -20,7 +20,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from server import SERVER_NAME, SERVER_VERSION, failure, handle_request, require_object, McpError
+from server import SERVER_NAME, SERVER_VERSION, failure, get_tools, handle_request, require_object, McpError
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -92,7 +92,7 @@ class McpHttpHandler(BaseHTTPRequestHandler):
                     {
                         "name": SERVER_NAME,
                         "version": SERVER_VERSION,
-                        "tools": ["ping", "echo", "add"],
+                        "tools": [tool["name"] for tool in get_tools() if isinstance(tool.get("name"), str)],
                     },
                     separators=(",", ":"),
                 ),

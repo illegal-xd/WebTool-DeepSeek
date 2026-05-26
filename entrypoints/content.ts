@@ -510,7 +510,8 @@ function consumeEarlyPlaceholder(name: string): boolean {
 }
 
 function getToolDisplayName(invocationName: string): string {
-  return currentToolDescriptors.find((descriptor) => descriptor.invocationName === invocationName)?.name ?? invocationName;
+  const descriptor = currentToolDescriptors.find((item) => item.invocationName === invocationName);
+  return descriptor?.title || descriptor?.name || invocationName;
 }
 
 	function toggleBlockCollapse(block: HTMLElement) {

@@ -27,12 +27,27 @@ const DEFAULT_FORM: FormState = {
 };
 
 const TRANSPORTS: Array<{ kind: TransportKind; label: string }> = [
-  { kind: 'streamable_http', label: 'Streamable HTTP' },
+  { kind: 'streamable_http', label: '流式 HTTP' },
   { kind: 'http', label: 'HTTP POST' },
-  { kind: 'sse', label: 'SSE' },
-  { kind: 'stdio_bridge', label: 'Stdio Bridge' },
-  { kind: 'native_messaging', label: 'Native Host' },
+  { kind: 'sse', label: 'SSE 事件流' },
+  { kind: 'stdio_bridge', label: '标准输入输出桥接' },
+  { kind: 'native_messaging', label: '原生消息主机' },
 ];
+
+const STATUS_LABELS: Record<McpServerConfig['status'] | 'disabled', string> = {
+  unknown: '未检测',
+  ready: '可用',
+  error: '异常',
+  disabled: '已停用',
+};
+
+function getTransportLabel(kind: TransportKind): string {
+  return TRANSPORTS.find((item) => item.kind === kind)?.label ?? kind;
+}
+
+function getStatusLabel(server: McpServerConfig): string {
+  return server.enabled ? STATUS_LABELS[server.status] : STATUS_LABELS.disabled;
+}
 
 function getMcpOriginPattern(server: McpServerConfig): string | null {
   const url = server.transport.url;
@@ -125,7 +140,7 @@ export default function McpPage() {
 
   const save = async () => {
     const payload: McpServerCreateInput = {
-      displayName: form.displayName.trim() || 'MCP Server',
+      displayName: form.displayName.trim() || 'MCP 服务',
       enabled: form.enabled,
       transport: {
         kind: form.kind,
@@ -265,7 +280,7 @@ export default function McpPage() {
             <button key={server.id} type="button" className="ds-card w-full rounded-2xl p-3 text-left" style={{ borderColor: selected?.id === server.id ? 'var(--ds-blue)' : undefined }} onClick={() => setSelectedId(server.id)}>
               <div className="text-[13px] font-medium truncate" style={{ color: 'var(--ds-text)' }}>{server.displayName}</div>
               <div className="text-[11px] mt-1" style={{ color: server.status === 'ready' ? 'var(--ds-success)' : server.status === 'error' ? 'var(--ds-danger)' : 'var(--ds-text-tertiary)' }}>
-                {server.enabled ? server.status : 'disabled'} · {server.transport.kind}
+                {getStatusLabel(server)} · {getTransportLabel(server.transport.kind)}
               </div>
             </button>
           ))}
@@ -301,7 +316,7 @@ export default function McpPage() {
                   {(selectedCache?.descriptors ?? []).map((tool) => (
                     <div key={tool.id} className="ds-surface-panel rounded-xl p-3">
                       <div className="text-[12px] font-medium" style={{ color: 'var(--ds-text)' }}>{tool.title}</div>
-                      <div className="text-[11px] mt-1 font-mono" style={{ color: 'var(--ds-blue)' }}>{tool.invocationName}</div>
+                      <div className="mcp-tool-invocation block max-w-full whitespace-normal break-all text-[11px] mt-1 font-mono leading-snug" style={{ color: 'var(--ds-blue)', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{tool.invocationName}</div>
                       <p className="text-[11px] mt-1 line-clamp-2" style={{ color: 'var(--ds-text-secondary)' }}>{tool.description}</p>
                     </div>
                   ))}

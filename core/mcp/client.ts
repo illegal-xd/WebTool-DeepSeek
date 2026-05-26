@@ -63,7 +63,29 @@ export async function callMcpTool(server: McpServerConfig, transport: McpProtoco
 
 export function normalizeMcpToolDescriptor(server: McpServerConfig, tool: McpToolDefinition): ToolDescriptor {
   const invocationName = createMcpInvocationName(server.id, tool.name);
-  return { id: createMcpDescriptorId(server.id, tool.name), provider: { kind: 'mcp', id: server.id, displayName: server.displayName, transport: server.transport.kind as ToolTransportKind }, name: tool.name, invocationName, title: stringValue(tool.title) || tool.name, description: stringValue(tool.description) || `MCP tool ${tool.name}`, inputSchema: normalizeToolSchema(tool.inputSchema), outputSchema: normalizeToolSchema(tool.outputSchema), execution: { mode: server.execution.mode, enabled: server.enabled && server.execution.enabled, risk: 'medium', timeoutMs: server.timeouts.requestMs, maxResultBytes: server.limits.maxResultBytes }, annotations: { mcpServerId: server.id, mcpToolName: tool.name } };
+  const display = getMcpToolDisplay(tool);
+  return { id: createMcpDescriptorId(server.id, tool.name), provider: { kind: 'mcp', id: server.id, displayName: server.displayName, transport: server.transport.kind as ToolTransportKind }, name: tool.name, invocationName, title: display.title, description: display.description, inputSchema: normalizeToolSchema(tool.inputSchema), outputSchema: normalizeToolSchema(tool.outputSchema), execution: { mode: server.execution.mode, enabled: server.enabled && server.execution.enabled, risk: 'medium', timeoutMs: server.timeouts.requestMs, maxResultBytes: server.limits.maxResultBytes }, annotations: { mcpServerId: server.id, mcpToolName: tool.name } };
+}
+
+function getMcpToolDisplay(tool: McpToolDefinition): { title: string; description: string } {
+  const displayByName: Record<string, { title: string; description: string }> = {
+    ping: { title: '连通性检测', description: '返回 pong 与服务端当前时间，用于验证 MCP 服务是否可用。' },
+    echo: { title: '文本回显', description: '回显传入文本，用于验证 MCP 工具参数传递是否正常。' },
+    add: { title: '数字相加', description: '计算两个数字之和，并返回结构化结果。' },
+    stock_tech: { title: 'A 股技术分析', description: '查询 A 股实时行情，并计算 MACD、RSI、KDJ、布林带和量比等技术指标。' },
+    get_cwd: { title: '查看工作区', description: '返回 MCP 服务当前受限工作区根目录。' },
+    list_directory: { title: '列出目录', description: '列出受限工作区内指定目录的文件和子目录。' },
+    read_file: { title: '读取文件', description: '读取受限工作区内的文本文件内容。' },
+    write_file: { title: '写入文件', description: '向受限工作区内的文本文件写入内容。' },
+    execute_command: { title: '执行命令', description: '在受限工作区内执行经过安全策略检查的 shell 命令。' },
+    bing_search: { title: 'Bing 网页搜索', description: '使用 Bing Search API 搜索网页内容。' },
+    crawl_webpage: { title: '抓取网页', description: '抓取指定网页并提取可阅读的纯文本内容。' },
+    'resolve-library-id': { title: '解析文档库 ID', description: '通过 Context7 根据库名和问题查找可用的文档库 ID。' },
+    'query-docs': { title: '查询文档', description: '通过 Context7 查询指定文档库中的相关技术文档内容。' },
+  };
+  const known = displayByName[tool.name];
+  if (known) return known;
+  return { title: '外部 MCP 工具', description: `来自外部 MCP 服务的工具，原始工具名为 ${tool.name}。` };
 }
 
 export function applyMcpToolPolicy(tools: ToolDescriptor[], server: McpServerConfig): ToolDescriptor[] {

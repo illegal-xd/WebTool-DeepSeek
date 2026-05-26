@@ -126,7 +126,7 @@ function normalizeServer(raw: unknown): McpServerConfig {
   return {
     version: STORAGE_VERSION,
     id: stringValue(value.id) || crypto.randomUUID(),
-    displayName: stringValue(value.displayName) || 'MCP Server',
+    displayName: stringValue(value.displayName) || 'MCP 服务',
     enabled,
     transport: { kind: value.transport?.kind ?? 'streamable_http', url: stringValue(value.transport?.url), nativeHost: stringValue(value.transport?.nativeHost), command: stringValue(value.transport?.command), args: stringArrayValue(value.transport?.args), cwd: stringValue(value.transport?.cwd), env: stringRecordValue(value.transport?.env) },
     headers: headerArrayValue(value.headers),

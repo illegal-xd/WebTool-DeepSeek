@@ -10,6 +10,8 @@
     "zip": "wxt zip",
     "package": "wxt zip && cp .output/chrome-mv3.zip ./WebTool-DeepSeek.zip",
     "compile": "tsc --noEmit",
+    "mcp:local": "python3 MCP/http_server.py",
+    "mcp:stdio": "python3 MCP/server.py",
     "postinstall": "wxt prepare"
   },
   "dependencies": {

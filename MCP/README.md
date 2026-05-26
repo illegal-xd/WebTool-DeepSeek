@@ -1,6 +1,6 @@
 # Tiny Test MCP Server
 
-一个零依赖的本地 MCP 测试服务，用来验证 agent 是否能成功连接、发现工具并调用工具。
+一个轻量本地 MCP 测试服务，用来验证 agent 是否能成功连接、发现工具并调用工具。
 
 支持两种启动方式：
 
@@ -12,7 +12,66 @@
 - `ping`：返回 `pong` 和服务端时间戳。
 - `echo`：回显传入的 `message`，用于验证参数传递。
 - `add`：计算 `a + b`，用于验证结构化参数和返回值。
+- `get_cwd`：返回受限工作区根目录。
+- `list_directory`：列出工作区内目录。
+- `read_file`：读取工作区内文本文件。
+- `write_file`：写入工作区内文本文件。
+- `execute_command`：在工作区根目录执行受安全策略限制的命令。
+- `bing_search`：使用 Bing Search API 搜索网页内容，需要在 `mcp.json` 中配置 API Key。
+- `crawl_webpage`：抓取网页并提取纯文本内容。
+- 外部 MCP 工具：通过 `mcp.json` 的 `mcpServers` 配置代理 stdio 或 HTTP MCP 服务。
 - `stock_tech`：查询A股实时行情与技术面指标（MACD/RSI/KDJ/布林带/量比），详情见下方单独章节。
+
+## 工作区限制
+
+本地文件和命令工具只允许访问工作区根目录内的路径。工作区根目录由 `DS_WORKSPACE` 指定；未设置时使用启动服务时的当前目录。
+
+```bash
+DS_WORKSPACE=/Users/allen/Desktop/github/WebTool-DeepSeek python3 MCP/http_server.py
+```
+
+危险命令（例如 `rm -rf /`、`rm -rf .`、`mkfs`、磁盘级 `dd`、`kill`/`pkill`/`taskkill` 等）会被拒绝。
+
+## 配置与依赖
+
+网络搜索和外部 HTTP MCP 代理依赖 `httpx` 与 `beautifulsoup4`：
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+复制配置示例后按需修改：
+
+```bash
+cp mcp.json.example mcp.json
+```
+
+`presets.json` 存放默认外部 MCP 服务，当前默认包含 `context7`：
+
+```json
+{
+  "mcpServers": {
+    "context7": {"type": "stdio", "command": "npx", "args": ["-y", "@upstash/context7-mcp"]}
+  }
+}
+```
+
+`mcp.json` 可继续追加或覆盖同名外部 MCP 服务；如果同名，`mcp.json` 优先。
+
+`services.web_search.config.bing_api_key` 用于配置 Bing Search API Key。未配置时，`bing_search` 会返回可读提示，不会发起搜索请求。
+
+`mcpServers` 可配置额外外部 MCP 服务：
+
+```json
+{
+  "mcpServers": {
+    "my_stdio": {"type": "stdio", "command": "python3", "args": ["/path/to/server.py"]},
+    "my_http": {"type": "http", "url": "http://127.0.0.1:8765/mcp"}
+  }
+}
+```
+
+外部工具名如果与内置工具冲突，会自动加上服务名前缀，例如 `my_stdio_ping`。
 
 ## stdio 本地验证
 
@@ -41,7 +100,7 @@ ok - initialize, tools/list, and tools/call all passed
 }
 ```
 
-连接成功后，客户端应该能看到 `ping`、`echo`、`add`、`stock_tech` 四个工具。先调用 `ping`，如果返回 `pong`，说明 agent 到 MCP 服务的 stdio 链路正常。
+连接成功后，客户端应该能看到 `ping`、`echo`、`add`、`stock_tech` 以及本地文件/命令工具。先调用 `ping`，如果返回 `pong`，说明 agent 到 MCP 服务的 stdio 链路正常。
 
 ## HTTP / SSE / Streamable HTTP 版本
 

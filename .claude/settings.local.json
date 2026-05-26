@@ -12,7 +12,12 @@
       "mcp__plugin_context-mode_context-mode__ctx_search",
       "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
       "mcp__plugin_context-mode_context-mode__ctx_execute_file",
-      "mcp__plugin_context-mode_context-mode__ctx_execute"
+      "mcp__plugin_context-mode_context-mode__ctx_execute",
+      "Bash(git restore *)",
+      "Bash(agent-browser snapshot *)",
+      "Bash(agent-browser --allow-file-access open \"file:///Users/allen/Desktop/github/WebTool-DeepSeek/dist/chrome-mv3/sidepanel.html\")",
+      "Bash(agent-browser screenshot *)",
+      "Bash(git rm *)"
     ]
   }
 }
