@@ -13,6 +13,13 @@ const BLOCK_STYLE_ID = 'dpp-tool-block-css';
 const STORAGE_PREFIX = 'dpp_tool_exec_';
 const RECOGNIZED_TOOL_TAGS = [...DEFAULT_RECOGNIZED_TOOL_TAGS];
 const ROUTE_RESTORE_WINDOW_MS = 4000;
+const ASSISTANT_MESSAGE_SELECTORS = [
+  '[class*="message"][class*="assistant"]',
+  '[class*="ds-chat-message-assistant"]',
+  '[class*="ds-msg-assistant"]',
+  '[data-role="assistant"]',
+];
+const ASSISTANT_MESSAGE_SELECTOR = ASSISTANT_MESSAGE_SELECTORS.join(',');
 
 interface DomToolCleanupState {
   insideToolBlock: boolean;
@@ -31,6 +38,8 @@ let currentToolBlock: HTMLElement | null = null;
 const earlyPlaceholderNames: string[] = [];
 let currentToolDescriptors: ToolDescriptor[] = [];
 const assistantToolCleanupState = new WeakMap<Element, DomToolCleanupState>();
+const pendingToolCleanupMessages = new Set<Element>();
+let toolCleanupFrame: number | null = null;
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
 const resolvedCallRaws = new Set<string>();
 const activeToolExecutions = new Set<Promise<unknown>>();
@@ -500,13 +509,7 @@ function getToolDisplayName(invocationName: string): string {
 
 
 function findAssistantMessages(): HTMLElement[] {
-  const selectors = [
-    '[class*="message"][class*="assistant"]',
-    '[class*="ds-chat-message-assistant"]',
-    '[class*="ds-msg-assistant"]',
-    '[data-role="assistant"]',
-  ];
-  for (const sel of selectors) {
+  for (const sel of ASSISTANT_MESSAGE_SELECTORS) {
     const found = Array.from(document.querySelectorAll<HTMLElement>(sel)).filter(isElementVisible);
     if (found.length > 0) return found;
   }
@@ -517,18 +520,25 @@ function isElementVisible(el: HTMLElement): boolean {
   return el.isConnected && Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
 }
 
+function isToolBlockElement(element: Element): boolean {
+  return element.classList.contains(BLOCK_CLASS);
+}
+
+function isInsideToolBlock(element: Element): boolean {
+  return isToolBlockElement(element) || Boolean(element.parentElement?.closest(`.${BLOCK_CLASS}`));
+}
+
+function hasExistingToolBlock(message: Element): boolean {
+  return Boolean(message.querySelector(`.${BLOCK_CLASS}`));
+}
+
 function getLastAssistantMessage(): HTMLElement | null {
   const msgs = findAssistantMessages();
   return msgs.length > 0 ? msgs[msgs.length - 1] : null;
 }
 
 function getAssistantMessageRoot(el: Element): Element | null {
-  return el.closest([
-    '[class*="message"][class*="assistant"]',
-    '[class*="ds-chat-message-assistant"]',
-    '[class*="ds-msg-assistant"]',
-    '[data-role="assistant"]',
-  ].join(','));
+  return el.closest(ASSISTANT_MESSAGE_SELECTOR);
 }
 
 async function handleToolCall(call: ToolCall, callId: number) {
@@ -749,6 +759,7 @@ function clearRenderedToolBlocks() {
 }
 
 function markRouteRestoreWindow() {
+  // DeepSeek 切换对话时可能先更新 URL、后异步渲染缓存 DOM；窗口期内才允许缓存恢复补卡。
   const until = Date.now() + ROUTE_RESTORE_WINDOW_MS;
   routeRestoreUntil = until;
   suppressToolPlaceholderUntil = until;
@@ -768,6 +779,7 @@ async function restorePersistedToolBlocks() {
 
     const records = (stored as ToolCallRestoreRecord[]).filter(isCurrentChatSessionRecord);
     const hydratedRecords = await hydrateToolCallRestoreRecords(records);
+    // 本地持久化恢复通常发生在路由切换后，DOM 可能还没稳定；先内容匹配，延迟几轮后才允许索引兜底。
     renderRestoredToolBlocks(hydratedRecords, key, 0, {
       allowAssistantIndexFallback: true,
       assistantIndexFallbackMinAttempt: 3,
@@ -834,6 +846,7 @@ function renderRestoredToolBlocks(
   attempt = 0,
   options: RestoreRenderOptions = {},
 ) {
+  // 恢复过程可能跨路由重试；storage key 变化说明用户已离开当前对话，旧重试必须停止。
   if (storageKey !== getToolRestoreStorageKey()) return;
   const pendingRecords: ToolCallRestoreRecord[] = [];
   const assistantMessages = findAssistantMessages();
@@ -876,9 +889,10 @@ function findAssistantMessageForToolRecord(
   const cleanContent = typeof record.metadata?.cleanContent === 'string' ? record.metadata.cleanContent : '';
   const normalizedRecordContent = normalizeToolRecordText(cleanContent || record.content);
 
+  // 内容匹配优先于 assistantIndex，避免对话切换或缓存渲染时把旧卡片挂到同序号的新消息。
   if (normalizedRecordContent) {
     const contentMatch = assistantMessages.find((message) => {
-      if (usedMessages.has(message) || message.querySelector(`.${BLOCK_CLASS}`)) return false;
+      if (usedMessages.has(message) || hasExistingToolBlock(message)) return false;
       const normalizedMessageText = normalizeToolRecordText(message.textContent || '');
       if (!normalizedMessageText) return false;
       return normalizedMessageText.includes(normalizedRecordContent) || normalizedRecordContent.includes(normalizedMessageText);
@@ -888,11 +902,12 @@ function findAssistantMessageForToolRecord(
 
   if (options.allowAssistantIndexFallback === true) {
     const minAttempt = options.assistantIndexFallbackMinAttempt ?? 0;
+    // 只有在内容匹配多次失败后才使用历史索引兜底，降低缓存 DOM 未稳定时的误挂载概率。
     if (attempt < minAttempt) return null;
 
     const assistantIndex = typeof record.metadata?.assistantIndex === 'number' ? record.metadata.assistantIndex : null;
     const indexedMessage = assistantIndex !== null ? assistantMessages[assistantIndex] : null;
-    if (indexedMessage && !usedMessages.has(indexedMessage) && !indexedMessage.querySelector(`.${BLOCK_CLASS}`)) {
+    if (indexedMessage && !usedMessages.has(indexedMessage) && !hasExistingToolBlock(indexedMessage)) {
       return indexedMessage;
     }
   }
@@ -908,7 +923,7 @@ function normalizeToolRecordText(value: string): string {
 }
 
 function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRestoreRecord) {
-  if (targetMessage.querySelector(`.${BLOCK_CLASS}`)) return;
+  if (hasExistingToolBlock(targetMessage)) return;
 
   const block = document.createElement('div');
   block.className = BLOCK_CLASS;
@@ -956,11 +971,73 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
 
 // ─── DOM Tool Tag Cleanup ─────────────────────────────────────────
 
+function scheduleToolCleanupForMessage(assistantMessage: Element) {
+  // DeepSeek 流式渲染会产生大量 DOM mutation；按消息去重到下一帧处理，避免整页反复扫描。
+  pendingToolCleanupMessages.add(assistantMessage);
+  if (toolCleanupFrame !== null) return;
+
+  toolCleanupFrame = requestAnimationFrame(() => {
+    toolCleanupFrame = null;
+    const messages = [...pendingToolCleanupMessages];
+    pendingToolCleanupMessages.clear();
+
+    for (const message of messages) {
+      if (message.isConnected) {
+        cleanRenderedToolCallsInMessage(message);
+      }
+    }
+  });
+}
+
+function shouldScheduleToolCleanup(assistantMessage: Element, text: string): boolean {
+  return hasPotentialToolMarkup(text) || assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true;
+}
+
 function setupToolCleanupObserver() {
-  const observer = new MutationObserver(() => {
-    cleanRenderedToolCalls();
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      if (mutation.type === 'characterData') {
+        const parent = mutation.target.parentElement;
+        const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
+        if (!assistantMessage) continue;
+        const text = mutation.target.textContent || '';
+        if (shouldScheduleToolCleanup(assistantMessage, text)) {
+          scheduleToolCleanupForMessage(assistantMessage);
+        }
+        continue;
+      }
+
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const parent = node.parentElement;
+          const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
+          if (!assistantMessage) continue;
+          const text = node.textContent || '';
+          if (shouldScheduleToolCleanup(assistantMessage, text)) {
+            scheduleToolCleanupForMessage(assistantMessage);
+          }
+          continue;
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        const element = node as Element;
+        if (isInsideToolBlock(element)) continue;
+
+        const assistantMessage = getAssistantMessageRoot(element)
+          ?? getFirstAssistantMessageDescendant(element);
+        if (!assistantMessage) continue;
+
+        if (shouldScheduleToolCleanup(assistantMessage, element.textContent || '')) {
+          scheduleToolCleanupForMessage(assistantMessage);
+        }
+      }
+    }
   });
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+
+function getFirstAssistantMessageDescendant(element: Element): Element | null {
+  return element.querySelector(ASSISTANT_MESSAGE_SELECTOR);
 }
 
 function cleanRenderedToolCalls() {
@@ -976,7 +1053,7 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
     acceptNode(node) {
       const parent = (node as Text).parentElement;
       if (!parent) return NodeFilter.FILTER_REJECT;
-      if (parent.closest(`.${BLOCK_CLASS}`)) return NodeFilter.FILTER_REJECT;
+      if (isInsideToolBlock(parent)) return NodeFilter.FILTER_REJECT;
       return NodeFilter.FILTER_ACCEPT;
     },
   });
@@ -1028,7 +1105,7 @@ function cleanRenderedToolCallElements(assistantMessage: Element): Set<string> |
 
   const foundTags = new Set<string>();
   assistantMessage.querySelectorAll('*').forEach((element) => {
-    if (element.closest(`.${BLOCK_CLASS}`)) return;
+    if (isInsideToolBlock(element)) return;
     const tagName = tagNames.get(element.localName.toLowerCase());
     if (!tagName) return;
     foundTags.add(tagName);
@@ -1205,7 +1282,6 @@ function removeToolMarkupFromText(text: string, state: DomToolCleanupState, node
 
 function setupDOMObserver() {
   let patchTimer: ReturnType<typeof setTimeout> | null = null;
-  let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPathname = window.location.pathname;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1224,63 +1300,20 @@ function setupDOMObserver() {
     scheduleRestore();
   };
 
-  const scheduleCleanup = () => {
-    if (cleanupTimer) return;
-    cleanupTimer = setTimeout(() => {
-      cleanupTimer = null;
-      cleanRenderedToolCalls();
-    }, 100);
-  };
-
   const observer = new MutationObserver((mutations) => {
     checkRouteChange();
     let needsPatch = false;
-    let needsCleanup = false;
 
     for (const mutation of mutations) {
-      if (mutation.type === 'characterData') {
-        const text = mutation.target.textContent || '';
-        const parent = mutation.target.parentElement;
-        const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
-        if (
-          hasPotentialToolMarkup(text) ||
-          (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
-        ) {
-          needsCleanup = true;
-        }
-        continue;
-      }
       for (const node of mutation.addedNodes) {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          needsPatch = true;
-          const el = node as HTMLElement;
-          if (isRouteRestoreWindowActive() && (getAssistantMessageRoot(el) || el.querySelector('[class*="message"][class*="assistant"], [class*="ds-chat-message-assistant"], [class*="ds-msg-assistant"], [data-role="assistant"]'))) {
-            scheduleRestore();
-          }
-          if (el.classList?.contains(BLOCK_CLASS)) continue;
-          const text = el.textContent || '';
-          const assistantMessage = getAssistantMessageRoot(el);
-          if (
-            hasPotentialToolMarkup(text) ||
-            (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
-          ) {
-            needsCleanup = true;
-          }
-        } else if (node.nodeType === Node.TEXT_NODE) {
-          const text = node.textContent || '';
-          const parent = node.parentElement;
-          const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
-          if (
-            hasPotentialToolMarkup(text) ||
-            (assistantMessage && assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true)
-          ) {
-            needsCleanup = true;
-          }
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        needsPatch = true;
+        const el = node as HTMLElement;
+        if (isRouteRestoreWindowActive() && (getAssistantMessageRoot(el) || getFirstAssistantMessageDescendant(el))) {
+          scheduleRestore();
         }
       }
     }
-
-    if (needsCleanup) scheduleCleanup();
 
     if (needsPatch && document.body.classList.contains('dpp-bg-active')) {
       if (patchTimer) clearTimeout(patchTimer);
@@ -1291,7 +1324,7 @@ function setupDOMObserver() {
     }
   });
 
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 function hasPotentialToolMarkup(text: string): boolean {

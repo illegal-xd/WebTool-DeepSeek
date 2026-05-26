@@ -1,3 +1,4 @@
+import { getLocalValue, removeLocalValue, setLocalValue } from '../storage/chrome';
 import type { SystemPromptPreset } from '../types';
 import { normalizeUsageStats } from '../weighting';
 
@@ -12,13 +13,11 @@ function normalizePreset(preset: SystemPromptPreset): SystemPromptPreset {
 }
 
 export async function getAllPresets(): Promise<SystemPromptPreset[]> {
-  const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, unknown>;
-  const items = data[STORAGE_KEY];
-  return Array.isArray(items) ? (items as SystemPromptPreset[]).map(normalizePreset) : [];
+  return readPresets();
 }
 
 export async function savePreset(preset: SystemPromptPreset): Promise<void> {
-  const presets = await getAllPresets();
+  const presets = await readPresets();
   const idx = presets.findIndex((p) => p.id === preset.id);
   const nextPreset = normalizePreset(idx >= 0 ? { ...presets[idx], ...preset } : preset);
   if (idx >= 0) {
@@ -26,11 +25,11 @@ export async function savePreset(preset: SystemPromptPreset): Promise<void> {
   } else {
     presets.push(nextPreset);
   }
-  await chrome.storage.local.set({ [STORAGE_KEY]: presets });
+  await writePresets(presets);
 }
 
 export async function touchPreset(id: string): Promise<void> {
-  const presets = await getAllPresets();
+  const presets = await readPresets();
   const idx = presets.findIndex((p) => p.id === id);
   if (idx === -1) return;
 
@@ -45,13 +44,13 @@ export async function touchPreset(id: string): Promise<void> {
       updatedAt: now,
     },
   };
-  await chrome.storage.local.set({ [STORAGE_KEY]: presets });
+  await writePresets(presets);
 }
 
 export async function deletePreset(id: string): Promise<void> {
-  const presets = await getAllPresets();
+  const presets = await readPresets();
   const filtered = presets.filter((p) => p.id !== id);
-  await chrome.storage.local.set({ [STORAGE_KEY]: filtered });
+  await writePresets(filtered);
 
   const activeId = await getActivePresetId();
   if (activeId === id) {
@@ -60,26 +59,40 @@ export async function deletePreset(id: string): Promise<void> {
 }
 
 export async function getActivePresetId(): Promise<string | null> {
-  const data = await chrome.storage.local.get(ACTIVE_KEY) as Record<string, unknown>;
-  const val = data[ACTIVE_KEY];
-  return typeof val === 'string' ? val : null;
+  return getLocalValue(ACTIVE_KEY, null, normalizeActivePresetId);
 }
 
 export async function setActivePresetId(id: string | null): Promise<void> {
   if (id === null) {
-    await chrome.storage.local.remove(ACTIVE_KEY);
+    await removeLocalValue(ACTIVE_KEY);
   } else {
-    await chrome.storage.local.set({ [ACTIVE_KEY]: id });
+    await setLocalValue(ACTIVE_KEY, id);
   }
 }
 
 export async function getActivePreset(): Promise<SystemPromptPreset | null> {
   const activeId = await getActivePresetId();
   if (!activeId) return null;
-  const presets = await getAllPresets();
+  const presets = await readPresets();
   return presets.find((p) => p.id === activeId) ?? null;
 }
 
 export async function replaceAllPresets(presets: SystemPromptPreset[]): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: presets.map(normalizePreset) });
+  await writePresets(presets);
+}
+
+function readPresets(): Promise<SystemPromptPreset[]> {
+  return getLocalValue(STORAGE_KEY, [], normalizePresets);
+}
+
+function writePresets(presets: SystemPromptPreset[]): Promise<void> {
+  return setLocalValue(STORAGE_KEY, presets.map(normalizePreset));
+}
+
+function normalizePresets(raw: unknown): SystemPromptPreset[] {
+  return Array.isArray(raw) ? (raw as SystemPromptPreset[]).map(normalizePreset) : [];
+}
+
+function normalizeActivePresetId(raw: unknown): string | null {
+  return typeof raw === 'string' ? raw : null;
 }

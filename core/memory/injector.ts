@@ -35,6 +35,16 @@ export function buildAugmentedPrompt(
   };
 }
 
+export function buildInstructionOnlyPrompt(
+  originalPrompt: string,
+  instructionBlock: string,
+): { augmented: string; usedMemoryIds: number[] } {
+  return {
+    augmented: instructionBlock ? instructionBlock + '\n\n---\n\n' + originalPrompt : originalPrompt,
+    usedMemoryIds: [],
+  };
+}
+
 export function renderToolSchemas(descriptors: readonly ToolDescriptor[] = DEFAULT_TOOL_DESCRIPTORS): string {
   return descriptors.map(renderToolSchema).join('\n\n');
 }

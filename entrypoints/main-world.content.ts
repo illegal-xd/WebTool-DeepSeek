@@ -12,6 +12,7 @@ export default defineContentScript({
   world: 'MAIN',
   runAt: 'document_start',
   main() {
+    // fetch/XHR 必须在 MAIN world 拦截，content world 只负责 UI 与扩展 API 桥接。
     installFetchHook();
     watchRouteChanges();
 
@@ -144,6 +145,7 @@ function watchRouteChanges() {
     lastPathname = window.location.pathname;
     const chatSessionId = getChatSessionIdFromPathname(lastPathname);
     if (chatSessionId) {
+      // 新对话首条消息发送时可能还没有真实 session id，路由落定后再补绑定单次注入状态。
       bindPendingSingleInjectionSession(chatSessionId);
     }
     window.postMessage({

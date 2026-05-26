@@ -1,7 +1,7 @@
 import { DEEPSEEK_API_URL } from '../constants';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, getToolCloseTag, getToolOpenTag, hasXmlToolMarker } from '../tool';
 import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill, ToolDescriptor } from '../types';
-import { buildAugmentedPrompt } from '../memory/injector';
+import { buildAugmentedPrompt, buildInstructionOnlyPrompt } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
 import { extractToolCalls, stripToolCalls } from './tool-parser';
@@ -51,6 +51,7 @@ let hookState: HookState = {
 
 function readSingleInjectionSessionIds(): Set<string> {
   try {
+    // 只持久化“当前标签页中已普通注入过的真实对话 id”，刷新页面后仍能避免重复注入。
     const raw = window.sessionStorage.getItem(SINGLE_INJECTION_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return new Set();
@@ -83,7 +84,32 @@ function deleteSingleInjectionSession(sessionId: string) {
   }
 }
 
+function getSingleInjectionSessionId(chatSessionId: string | null): string {
+  return chatSessionId ?? PENDING_SINGLE_INJECTION_SESSION;
+}
+
+function shouldUseSingleMemoryInjection(): boolean {
+  return hookState.singleMemoryInjection && !hookState.activePreset;
+}
+
+function syncConcreteSingleInjectionSession(chatSessionId: string | null, hasConcreteParentMessage: boolean) {
+  if (chatSessionId !== null && hasConcreteParentMessage) {
+    bindPendingSingleInjectionSession(chatSessionId);
+  }
+}
+
+function shouldSkipSingleMemoryInjection(isFirstMessage: boolean, sessionId: string): boolean {
+  return !isFirstMessage && shouldUseSingleMemoryInjection() && hookState._singleInjectionSessionIds.has(sessionId);
+}
+
+function recordSingleMemoryInjection(sessionId: string) {
+  if (shouldUseSingleMemoryInjection()) {
+    markSingleInjectionSession(sessionId);
+  }
+}
+
 export function bindPendingSingleInjectionSession(sessionId: string) {
+  // 新对话首条请求通常还没有 chat_session_id，路由更新后再把 pending 标记绑定到真实会话。
   if (!hookState._singleInjectionSessionIds.has(PENDING_SINGLE_INJECTION_SESSION)) return;
   markSingleInjectionSession(sessionId);
   deleteSingleInjectionSession(PENDING_SINGLE_INJECTION_SESSION);
@@ -192,17 +218,14 @@ function modifyRequestBody(bodyStr: string): string | null {
     hookState._lastChatSessionId = chatSessionId;
   }
 
-  const shouldInjectPreset = Boolean(hookState.activePreset);
-
-  const presetInstruction = shouldInjectPreset
-    ? hookState.activePreset!.content
-    : '';
+  const presetInstruction = getPresetInstruction();
 
   if (hookState.modelType) {
     body.model_type = hookState.modelType;
   }
 
   const memInvocation = parseMemoryCommand(originalPrompt, hookState.memories);
+  // `#记忆名` 是显式手动注入路径，不参与普通自动记忆的单次去重。
   if (memInvocation) {
     const { memory, args } = memInvocation;
     const memoryInstruction = wrapMemoryInput(memory.name, memory.content, '');
@@ -221,17 +244,19 @@ function modifyRequestBody(bodyStr: string): string | null {
   }
 
   const invocation = parseSkillCommand(originalPrompt);
+  // Skill/预设只有在自身开启记忆时才拼接默认记忆系统提示词；否则只拼接选中的指令块。
   if (invocation) {
     const resolved = resolveSkills(invocation.skillName, invocation.args);
     if (resolved) {
-      const memorySources = collectMemorySources(resolved);
-      const targetMemories = resolveTargetMemories(memorySources);
-      const { augmented, usedMemoryIds } = buildAugmentedPrompt(resolved.userInput, targetMemories, {
+      const instructionBlock = joinInstructionBlocks(presetInstruction, resolved.instructions);
+      const useMemoryPrompt = shouldUseMemoryPromptForSkill(resolved);
+      const { augmented, usedMemoryIds } = buildPromptForInstructionMode(
+        resolved.userInput,
+        instructionBlock,
+        useMemoryPrompt,
+        useMemoryPrompt ? resolveTargetMemories(collectMemorySources(resolved)) : [],
         thinkingEnabled,
-        tokenBudget: hookState.memoryTokenBudget,
-        toolDescriptors: hookState.toolDescriptors,
-        instructionBlock: joinInstructionBlocks(presetInstruction, resolved.instructions),
-      });
+      );
 
       body.prompt = augmented;
       if (usedMemoryIds.length > 0) {
@@ -246,23 +271,19 @@ function modifyRequestBody(bodyStr: string): string | null {
   let identityOnly = false;
 
   if (hookState.activePreset) {
-    if (hookState.activePreset.memoryEnabled === true) {
-      if (hookState.activePreset.memoryIds && hookState.activePreset.memoryIds.length > 0) {
-        targetMemories = hookState.memories.filter(
-          (m) => m.id !== undefined && hookState.activePreset!.memoryIds!.includes(m.id)
-        );
-      }
+    if (isPresetMemoryEnabled()) {
+      targetMemories = resolveActivePresetMemories();
     } else {
-      targetMemories = [];
+      const { augmented } = buildPromptForInstructionMode(originalPrompt, presetInstruction, false, [], thinkingEnabled);
+      body.prompt = augmented;
+      return JSON.stringify(body);
     }
   }
 
-  const shouldUseSingleMemoryInjection = hookState.singleMemoryInjection && !hookState.activePreset;
-  const singleInjectionSessionId = chatSessionId ?? PENDING_SINGLE_INJECTION_SESSION;
-  if (chatSessionId !== null && hasConcreteParentMessage) {
-    bindPendingSingleInjectionSession(chatSessionId);
-  }
-  if (!isFirstMessage && shouldUseSingleMemoryInjection && hookState._singleInjectionSessionIds.has(singleInjectionSessionId)) {
+  const singleInjectionSessionId = getSingleInjectionSessionId(chatSessionId);
+  // 普通自动注入才应用单次限制；预设路径要继续携带预设内容与其关联记忆。
+  syncConcreteSingleInjectionSession(chatSessionId, hasConcreteParentMessage);
+  if (shouldSkipSingleMemoryInjection(isFirstMessage, singleInjectionSessionId)) {
     body.prompt = originalPrompt;
     return JSON.stringify(body);
   }
@@ -275,9 +296,7 @@ function modifyRequestBody(bodyStr: string): string | null {
     instructionBlock: presetInstruction,
   });
   body.prompt = augmented;
-  if (shouldUseSingleMemoryInjection) {
-    markSingleInjectionSession(singleInjectionSessionId);
-  }
+  recordSingleMemoryInjection(singleInjectionSessionId);
 
   if (usedMemoryIds.length > 0) {
     hookState.onMemoriesUsed(usedMemoryIds);
@@ -338,6 +357,43 @@ interface ResolvedSkills {
   userInput: string;
   memoryEnabled: boolean;
   memoryIds?: number[];
+}
+
+function resolveActivePresetMemories(): Memory[] {
+  const memoryIds = hookState.activePreset?.memoryIds;
+  if (!memoryIds || memoryIds.length === 0) return hookState.memories;
+  return hookState.memories.filter((memory) => memory.id !== undefined && memoryIds.includes(memory.id));
+}
+
+function getPresetInstruction(): string {
+  return hookState.activePreset?.content ?? '';
+}
+
+function isPresetMemoryEnabled(): boolean {
+  return hookState.activePreset?.memoryEnabled === true;
+}
+
+function shouldUseMemoryPromptForSkill(resolved: ResolvedSkills): boolean {
+  return isPresetMemoryEnabled() || resolved.memoryEnabled;
+}
+
+function buildPromptForInstructionMode(
+  userInput: string,
+  instructionBlock: string,
+  useMemoryPrompt: boolean,
+  targetMemories: Memory[],
+  thinkingEnabled: boolean,
+): { augmented: string; usedMemoryIds: number[] } {
+  if (!useMemoryPrompt) {
+    return buildInstructionOnlyPrompt(userInput, instructionBlock);
+  }
+
+  return buildAugmentedPrompt(userInput, targetMemories, {
+    thinkingEnabled,
+    tokenBudget: hookState.memoryTokenBudget,
+    toolDescriptors: hookState.toolDescriptors,
+    instructionBlock,
+  });
 }
 
 function joinInstructionBlocks(...blocks: string[]): string {

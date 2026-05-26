@@ -8,6 +8,7 @@ import {
   replaceAllMemories,
   archiveStaleMemories,
 } from '../core/memory/store';
+import { getSessionValue, setSessionValue } from '../core/storage/chrome';
 import { APP_VERSION } from '../config.js';
 import { getAllSkills, saveSkill, deleteSkill, replaceAllCustomSkills, touchSkill } from '../core/skill/registry';
 import {
@@ -485,7 +486,7 @@ async function getCachedConversationSessions(forceRefresh: boolean): Promise<Con
 
   const sessions = await sendDeepSeekTabMessage<ConversationSession[]>({ type: 'DS_LIST_SESSIONS' });
   const nextCache: ConversationSessionCache = { date: today, sessions: sessions ?? [], updatedAt: Date.now() };
-  await chrome.storage.session.set({ [CONVERSATION_SESSION_CACHE_KEY]: nextCache });
+  await setSessionValue(CONVERSATION_SESSION_CACHE_KEY, nextCache);
   return nextCache.sessions;
 }
 
@@ -494,8 +495,10 @@ function getConversationCacheDateKey(date = new Date()): string {
 }
 
 async function readConversationSessionCache(): Promise<ConversationSessionCache | null> {
-  const data = await chrome.storage.session.get(CONVERSATION_SESSION_CACHE_KEY) as Record<string, unknown>;
-  const raw = data[CONVERSATION_SESSION_CACHE_KEY];
+  return getSessionValue(CONVERSATION_SESSION_CACHE_KEY, null, normalizeConversationSessionCache);
+}
+
+function normalizeConversationSessionCache(raw: unknown): ConversationSessionCache | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const value = raw as Partial<ConversationSessionCache>;
   if (typeof value.date !== 'string' || !Array.isArray(value.sessions)) return null;

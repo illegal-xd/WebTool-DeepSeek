@@ -1,3 +1,4 @@
+import { getLocalValue, setLocalValue } from '../storage/chrome';
 import type { Skill } from '../types';
 import { normalizeUsageStats } from '../weighting';
 import { BUILTIN_SKILLS } from './builtin';
@@ -12,34 +13,23 @@ function normalizeSkill(skill: Skill): Skill {
 }
 
 export async function getAllSkills(): Promise<Skill[]> {
-  const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, unknown>;
-  const stored = data[STORAGE_KEY];
-  const items = Array.isArray(stored) ? (stored as Skill[]) : [];
-  const custom: Skill[] = items.filter(
-    (s: Skill) => s.source === 'custom',
-  );
+  const custom = await readCustomSkills();
   return [...BUILTIN_SKILLS.map(normalizeSkill), ...custom.map(normalizeSkill)];
 }
 
 export async function saveSkill(skill: Skill): Promise<void> {
-  const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, unknown>;
-  const stored = data[STORAGE_KEY];
-  const custom: Skill[] = Array.isArray(stored)
-    ? (stored as Skill[]).filter((s) => s.source === 'custom')
-    : [];
+  const custom = await readCustomSkills();
   const idx = custom.findIndex((s) => s.name === skill.name);
   if (idx >= 0) {
     custom[idx] = normalizeSkill({ ...custom[idx], ...skill });
   } else {
     custom.push(normalizeSkill({ ...skill, source: 'custom' }));
   }
-  await chrome.storage.local.set({ [STORAGE_KEY]: custom });
+  await writeCustomSkills(custom);
 }
 
 export async function touchSkill(name: string): Promise<void> {
-  const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, unknown>;
-  const stored = data[STORAGE_KEY];
-  const custom: Skill[] = Array.isArray(stored) ? (stored as Skill[]) : [];
+  const custom = await readCustomSkills();
   const idx = custom.findIndex((s) => s.name === name);
   if (idx === -1) return;
 
@@ -54,19 +44,28 @@ export async function touchSkill(name: string): Promise<void> {
       updatedAt: now,
     },
   };
-  await chrome.storage.local.set({ [STORAGE_KEY]: custom });
+  await writeCustomSkills(custom);
 }
 
 export async function deleteSkill(name: string): Promise<void> {
-  const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, unknown>;
-  const stored = data[STORAGE_KEY];
-  const custom: Skill[] = Array.isArray(stored)
-    ? (stored as Skill[]).filter((s) => s.name !== name)
-    : [];
-  await chrome.storage.local.set({ [STORAGE_KEY]: custom });
+  const custom = (await readCustomSkills()).filter((s) => s.name !== name);
+  await writeCustomSkills(custom);
 }
 
 export async function replaceAllCustomSkills(skills: Skill[]): Promise<void> {
   const custom = skills.map((s) => normalizeSkill({ ...s, source: 'custom' as const }));
-  await chrome.storage.local.set({ [STORAGE_KEY]: custom });
+  await writeCustomSkills(custom);
+}
+
+function readCustomSkills(): Promise<Skill[]> {
+  return getLocalValue(STORAGE_KEY, [], normalizeCustomSkills);
+}
+
+function writeCustomSkills(skills: Skill[]): Promise<void> {
+  return setLocalValue(STORAGE_KEY, skills.map(normalizeSkill));
+}
+
+function normalizeCustomSkills(raw: unknown): Skill[] {
+  const items = Array.isArray(raw) ? raw as Skill[] : [];
+  return items.filter((skill) => skill.source === 'custom').map(normalizeSkill);
 }

@@ -1,3 +1,4 @@
+import { getLocalValue, setLocalValue } from '../storage/chrome';
 import type { McpHeaderValue, McpSecretValue, McpServerConfig, McpServerCreateInput, McpServerId, McpServerStorageState, McpServerTimeouts, McpServerUpdateInput, McpToolCacheEntry } from './types';
 
 const STORAGE_KEY = 'webtool_deepseek_mcp_servers';
@@ -100,12 +101,16 @@ export function buildMcpRequestHeaders(server: McpServerConfig): Record<string, 
 }
 
 async function readState(): Promise<McpServerStorageState> {
-  const data = await chrome.storage.local.get(STORAGE_KEY) as Record<string, unknown>;
-  return normalizeState(data[STORAGE_KEY]);
+  return getLocalValue(STORAGE_KEY, { ...EMPTY_STATE }, normalizeState);
 }
 
 async function writeState(state: McpServerStorageState): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: { version: STORAGE_VERSION, servers: state.servers.map(normalizeServer), toolCaches: state.toolCaches.map(normalizeToolCache).filter((cache): cache is McpToolCacheEntry => cache !== null) } });
+  const normalized = normalizeState(state);
+  await setLocalValue(STORAGE_KEY, {
+    version: STORAGE_VERSION,
+    servers: normalized.servers,
+    toolCaches: normalized.toolCaches,
+  });
 }
 
 function normalizeState(raw: unknown): McpServerStorageState {
