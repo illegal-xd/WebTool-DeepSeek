@@ -1,7 +1,14 @@
 import { createContext, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  THEME_QUERY,
+  THEME_STORAGE_KEY,
+  isThemePreference,
+  resolveTheme,
+  type ResolvedTheme,
+  type ThemePreference,
+} from '../core/theme';
 
-export type ThemePreference = 'system' | 'light' | 'dark';
-export type ResolvedTheme = 'light' | 'dark';
+export type { ThemePreference } from '../core/theme';
 
 interface ThemeContextValue {
   theme: ThemePreference;
@@ -12,16 +19,9 @@ interface ThemeContextValue {
 
 export const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-const STORAGE_KEY = 'webtool-theme';
-const THEME_QUERY = '(prefers-color-scheme: dark)';
-
-function isThemePreference(value: string | null): value is ThemePreference {
-  return value === 'system' || value === 'light' || value === 'dark';
-}
-
 function getStoredPreference(): ThemePreference {
   if (typeof window === 'undefined') return 'system';
-  const stored = window.localStorage.getItem(STORAGE_KEY);
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
   return isThemePreference(stored) ? stored : 'system';
 }
 
@@ -30,16 +30,17 @@ function getSystemTheme(): ResolvedTheme {
   return window.matchMedia(THEME_QUERY).matches ? 'dark' : 'light';
 }
 
-function resolveTheme(preference: ThemePreference, systemTheme: ResolvedTheme): ResolvedTheme {
-  return preference === 'system' ? systemTheme : preference;
-}
-
 function applyTheme(preference: ThemePreference, resolvedTheme: ResolvedTheme) {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   root.dataset.themePreference = preference;
   root.dataset.theme = resolvedTheme;
   root.style.colorScheme = resolvedTheme;
+}
+
+function persistTheme(preference: ThemePreference) {
+  window.localStorage.setItem(THEME_STORAGE_KEY, preference);
+  chrome.runtime.sendMessage({ type: 'SET_THEME', payload: preference }).catch(() => {});
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -60,7 +61,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyTheme(theme, resolvedTheme);
-    window.localStorage.setItem(STORAGE_KEY, theme);
+    persistTheme(theme);
   }, [theme, resolvedTheme]);
 
   const setTheme = useCallback((nextTheme: ThemePreference) => {

@@ -6,6 +6,7 @@ import {
 } from '../core/conversation/api';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, createXmlToolCallRegex } from '../core/tool';
 import type { MemoryConfig } from '../core/memory/config';
+import { THEME_QUERY, normalizeThemePreference, resolveTheme, type ResolvedTheme, type ThemePreference } from '../core/theme';
 import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCallHistoryRecord, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
 const BLOCK_CLASS = 'dpp-tool-block';
@@ -33,6 +34,7 @@ interface TextRemovalRange {
   tagName: string | null;
 }
 
+let currentPromptThemePreference: ThemePreference = 'system';
 let nextCallId = 0;
 let currentToolBlock: HTMLElement | null = null;
 const earlyPlaceholderNames: string[] = [];
@@ -206,6 +208,14 @@ export default defineContentScript({
       }
     });
 
+    safeRuntimeSendMessage<ThemePreference>({ type: 'GET_THEME' }).then((theme) => {
+      applyPromptUiTheme(normalizeThemePreference(theme));
+    });
+
+    window.matchMedia(THEME_QUERY).addEventListener('change', () => {
+      if (currentPromptThemePreference === 'system') applyPromptUiTheme('system');
+    });
+
     safeRuntimeSendMessage<BackgroundConfig | null>({ type: 'GET_BACKGROUND' }).then((cfg) => {
       applyBackground(cfg);
     });
@@ -240,6 +250,8 @@ export default defineContentScript({
         });
       } else if (message.type === 'BACKGROUND_UPDATED') {
         applyBackground(message.config as BackgroundConfig | null);
+      } else if (message.type === 'THEME_UPDATED') {
+        applyPromptUiTheme(normalizeThemePreference(message.theme));
       }
     });
 
@@ -1425,6 +1437,39 @@ function getToolbarBottom(): number {
   }
 
   return walk(root);
+}
+
+function getPromptUiSystemTheme(): ResolvedTheme {
+  return window.matchMedia(THEME_QUERY).matches ? 'dark' : 'light';
+}
+
+function applyPromptUiTheme(preference: ThemePreference) {
+  currentPromptThemePreference = preference;
+  const resolvedTheme = resolveTheme(preference, getPromptUiSystemTheme());
+  const root = document.documentElement;
+  root.dataset.dppTheme = resolvedTheme;
+  root.style.setProperty('--dpp-prompt-bg', resolvedTheme === 'dark' ? '#121A2B' : '#FFFFFF');
+  root.style.setProperty('--dpp-prompt-border', resolvedTheme === 'dark' ? '#334155' : '#E5E7EB');
+  root.style.setProperty('--dpp-prompt-active-bg', resolvedTheme === 'dark' ? '#172033' : '#F7F8FA');
+  root.style.setProperty('--dpp-prompt-text-muted', resolvedTheme === 'dark' ? '#94A3B8' : '#9CA3AF');
+  root.style.setProperty('--dpp-prompt-text-faint', resolvedTheme === 'dark' ? '#64748B' : '#D1D5DB');
+  root.style.setProperty('--dpp-prompt-hint-border', resolvedTheme === 'dark' ? '#1E293B' : '#F3F4F6');
+  root.style.setProperty('--dpp-prompt-shadow', resolvedTheme === 'dark' ? '0 8px 28px rgba(0,0,0,0.42), 0 1px 4px rgba(0,0,0,0.32)' : '0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)');
+  root.style.setProperty('--dpp-skill-color', resolvedTheme === 'dark' ? '#8EA2FF' : '#4D6BFE');
+  root.style.setProperty('--dpp-skill-bg', resolvedTheme === 'dark' ? '#1E2B52' : '#EEF1FF');
+  root.style.setProperty('--dpp-memory-color', resolvedTheme === 'dark' ? '#A78BFA' : '#8B5CF6');
+  root.style.setProperty('--dpp-memory-bg', resolvedTheme === 'dark' ? '#2E1065' : '#F5F3FF');
+  root.style.setProperty('--dpp-preset-color', resolvedTheme === 'dark' ? '#FBBF24' : '#D97706');
+  root.style.setProperty('--dpp-preset-bg', resolvedTheme === 'dark' ? '#3A2604' : '#FFFBEB');
+  root.style.setProperty('--dpp-preset-border', resolvedTheme === 'dark' ? '#854D0E' : '#FDE68A');
+  root.style.setProperty('--dpp-danger-color', resolvedTheme === 'dark' ? '#F87171' : '#EF4444');
+  root.style.setProperty('--dpp-danger-bg', resolvedTheme === 'dark' ? '#3B0A0A' : '#FEF2F2');
+  root.style.setProperty('--dpp-success-color', resolvedTheme === 'dark' ? '#34D399' : '#10B981');
+  root.style.setProperty('--dpp-success-bg', resolvedTheme === 'dark' ? '#052E24' : '#ECFDF5');
+  root.style.setProperty('--dpp-info-color', resolvedTheme === 'dark' ? '#60A5FA' : '#3B82F6');
+  root.style.setProperty('--dpp-info-bg', resolvedTheme === 'dark' ? '#0B214A' : '#EFF6FF');
+  root.style.setProperty('--dpp-reference-color', resolvedTheme === 'dark' ? '#FBBF24' : '#F59E0B');
+  root.style.setProperty('--dpp-reference-bg', resolvedTheme === 'dark' ? '#3A2604' : '#FFFBEB');
 }
 
 function removeBackground() {

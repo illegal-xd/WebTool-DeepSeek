@@ -8,7 +8,7 @@ import {
   replaceAllMemories,
   archiveStaleMemories,
 } from '../core/memory/store';
-import { getSessionValue, setSessionValue } from '../core/storage/chrome';
+import { getLocalValue, getSessionValue, setLocalValue, setSessionValue } from '../core/storage/chrome';
 import { APP_VERSION } from '../config.js';
 import { getAllSkills, saveSkill, deleteSkill, replaceAllCustomSkills, touchSkill } from '../core/skill/registry';
 import {
@@ -47,6 +47,7 @@ import {
   unassignSessionsFromCategory,
 } from '../core/conversation/store';
 import { getMemoryConfig, saveMemoryConfig, type MemoryConfig } from '../core/memory/config';
+import { THEME_STORAGE_KEY, normalizeThemePreference, type ThemePreference } from '../core/theme';
 import type { BackgroundConfig, ConversationCategory, ConversationMessage, ConversationSession, McpServerCreateInput, McpServerUpdateInput, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset, ToolCall } from '../core/types';
 
 const NEW_CHAT_URL = 'https://chat.deepseek.com/a/chat';
@@ -275,6 +276,16 @@ async function handleMessage(
 
     case 'GET_CONFIG':
       return { version: APP_VERSION };
+
+    case 'GET_THEME':
+      return getThemePreference();
+
+    case 'SET_THEME': {
+      const theme = normalizeThemePreference(message.payload);
+      await setThemePreference(theme);
+      await broadcastThemeUpdate(theme);
+      return { ok: true };
+    }
 
     case 'GET_MEMORY_CONFIG':
       return getMemoryConfig();
@@ -534,6 +545,19 @@ async function broadcastStateUpdate(excludeTabId?: number) {
   await broadcastToTabs(payload, excludeTabId);
   // Also notify extension pages (sidepanel, popup) via runtime messaging
   chrome.runtime.sendMessage(payload).catch(() => {});
+}
+
+async function getThemePreference(): Promise<ThemePreference> {
+  return getLocalValue(THEME_STORAGE_KEY, 'system', normalizeThemePreference);
+}
+
+async function setThemePreference(theme: ThemePreference): Promise<void> {
+  await setLocalValue(THEME_STORAGE_KEY, theme);
+}
+
+async function broadcastThemeUpdate(theme: ThemePreference) {
+  await broadcastToTabs({ type: 'THEME_UPDATED', theme });
+  chrome.runtime.sendMessage({ type: 'THEME_UPDATED', theme }).catch(() => {});
 }
 
 async function broadcastBackgroundUpdate(config: BackgroundConfig | null) {

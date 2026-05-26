@@ -124,17 +124,17 @@ function injectStyles() {
   align-items: center;
   gap: 2px;
   padding: 2px 6px 2px 8px;
-  background: #FFFBEB;
-  border: 1px solid #FDE68A;
+  background: var(--dpp-preset-bg, #FFFBEB);
+  border: 1px solid var(--dpp-preset-border, #FDE68A);
   border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
   line-height: 18px;
-  color: #D97706;
+  color: var(--dpp-preset-color, #D97706);
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
   pointer-events: auto;
   animation: dpp-tag-in 0.15s ease;
-  box-shadow: 0 1px 3px rgba(217,119,6,0.12);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--dpp-preset-color, #D97706) 18%, transparent);
 }
 .dpp-preset-tag-name {
   cursor: default;
@@ -148,7 +148,7 @@ function injectStyles() {
   justify-content: center;
   font-size: 14px;
   line-height: 1;
-  color: #D97706;
+  color: var(--dpp-preset-color, #D97706);
   cursor: pointer;
   transition: background 0.1s;
   margin-left: 1px;
@@ -157,8 +157,8 @@ function injectStyles() {
   display: inline-flex;
 }
 .dpp-preset-tag-close:hover {
-  background: #FDE68A;
-  color: #92400E;
+  background: var(--dpp-preset-border, #FDE68A);
+  color: var(--dpp-preset-color, #92400E);
 }
 @keyframes dpp-tag-in {
   from { opacity: 0; transform: scale(0.9); }

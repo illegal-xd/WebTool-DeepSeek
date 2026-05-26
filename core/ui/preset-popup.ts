@@ -216,11 +216,11 @@ function injectStyles() {
 .dpp-preset-popup {
   position: fixed;
   z-index: 99999;
-  background: #FFFFFF;
-  border: 1px solid #E5E7EB;
+  background: var(--dpp-prompt-bg, #FFFFFF);
+  border: 1px solid var(--dpp-prompt-border, #E5E7EB);
   border-radius: 12px;
   padding: 4px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04);
+  box-shadow: var(--dpp-prompt-shadow, 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04));
   display: none;
   animation: dpp-slide-up .15s ease;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
@@ -240,7 +240,7 @@ function injectStyles() {
   transition: background .1s;
 }
 .dpp-preset-item.dpp-active {
-  background: #FFFBEB;
+  background: var(--dpp-preset-bg, #FFFBEB);
 }
 .dpp-preset-head {
   display: flex;
@@ -249,11 +249,11 @@ function injectStyles() {
   gap: 8px;
 }
 .dpp-preset-trigger {
-  color: #D97706;
+  color: var(--dpp-preset-color, #D97706);
   font-size: 13px;
   font-family: 'SF Mono', Monaco, Consolas, monospace;
   font-weight: 600;
-  background: #FFFBEB;
+  background: var(--dpp-preset-bg, #FFFBEB);
   padding: 1px 6px;
   border-radius: 4px;
   max-width: 70%;
@@ -269,15 +269,15 @@ function injectStyles() {
   font-weight: 500;
 }
 .dpp-preset-badge.preset {
-  color: #D97706;
-  background: #FFFBEB;
+  color: var(--dpp-preset-color, #D97706);
+  background: var(--dpp-preset-bg, #FFFBEB);
 }
 .dpp-preset-badge.close {
-  color: #EF4444;
-  background: #FEF2F2;
+  color: var(--dpp-danger-color, #EF4444);
+  background: var(--dpp-danger-bg, #FEF2F2);
 }
 .dpp-preset-desc {
-  color: #9CA3AF;
+  color: var(--dpp-prompt-text-muted, #9CA3AF);
   font-size: 11px;
   margin-top: 2px;
   white-space: nowrap;
@@ -286,10 +286,10 @@ function injectStyles() {
 }
 .dpp-preset-hint {
   text-align: center;
-  color: #D1D5DB;
+  color: var(--dpp-prompt-text-faint, #D1D5DB);
   font-size: 10px;
   padding: 4px 0 2px;
-  border-top: 1px solid #F3F4F6;
+  border-top: 1px solid var(--dpp-prompt-hint-border, #F3F4F6);
   margin-top: 4px;
 }
 `;

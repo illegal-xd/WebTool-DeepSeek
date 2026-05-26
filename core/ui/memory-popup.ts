@@ -216,11 +216,11 @@ function injectStyles() {
 .dpp-memory-popup {
   position: fixed;
   z-index: 99999;
-  background: #FFFFFF;
-  border: 1px solid #E5E7EB;
+  background: var(--dpp-prompt-bg, #FFFFFF);
+  border: 1px solid var(--dpp-prompt-border, #E5E7EB);
   border-radius: 12px;
   padding: 4px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04);
+  box-shadow: var(--dpp-prompt-shadow, 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04));
   display: none;
   animation: dpp-slide-up .15s ease;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
@@ -240,7 +240,7 @@ function injectStyles() {
   transition: background .1s;
 }
 .dpp-memory-item.dpp-active {
-  background: #F5F3FF;
+  background: var(--dpp-memory-bg, #F5F3FF);
 }
 .dpp-memory-head {
   display: flex;
@@ -249,11 +249,11 @@ function injectStyles() {
   gap: 8px;
 }
 .dpp-memory-trigger {
-  color: #8B5CF6;
+  color: var(--dpp-memory-color, #8B5CF6);
   font-size: 13px;
   font-family: 'SF Mono', Monaco, Consolas, monospace;
   font-weight: 600;
-  background: #F5F3FF;
+  background: var(--dpp-memory-bg, #F5F3FF);
   padding: 1px 6px;
   border-radius: 4px;
   max-width: 70%;
@@ -269,23 +269,23 @@ function injectStyles() {
   font-weight: 500;
 }
 .dpp-memory-type.user {
-  color: #3B82F6;
-  background: #EFF6FF;
+  color: var(--dpp-info-color, #3B82F6);
+  background: var(--dpp-info-bg, #EFF6FF);
 }
 .dpp-memory-type.feedback {
-  color: #EF4444;
-  background: #FEF2F2;
+  color: var(--dpp-danger-color, #EF4444);
+  background: var(--dpp-danger-bg, #FEF2F2);
 }
 .dpp-memory-type.topic {
-  color: #10B981;
-  background: #ECFDF5;
+  color: var(--dpp-success-color, #10B981);
+  background: var(--dpp-success-bg, #ECFDF5);
 }
 .dpp-memory-type.reference {
-  color: #F59E0B;
-  background: #FFFBEB;
+  color: var(--dpp-reference-color, #F59E0B);
+  background: var(--dpp-reference-bg, #FFFBEB);
 }
 .dpp-memory-desc {
-  color: #9CA3AF;
+  color: var(--dpp-prompt-text-muted, #9CA3AF);
   font-size: 11px;
   margin-top: 2px;
   white-space: nowrap;
@@ -294,10 +294,10 @@ function injectStyles() {
 }
 .dpp-memory-hint {
   text-align: center;
-  color: #D1D5DB;
+  color: var(--dpp-prompt-text-faint, #D1D5DB);
   font-size: 10px;
   padding: 4px 0 2px;
-  border-top: 1px solid #F3F4F6;
+  border-top: 1px solid var(--dpp-prompt-hint-border, #F3F4F6);
   margin-top: 4px;
 }
 `;
