@@ -1,7 +1,7 @@
 import { DEEPSEEK_API_URL } from '../constants';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, getToolCloseTag, getToolOpenTag, hasXmlToolMarker } from '../tool';
 import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill, ToolDescriptor } from '../types';
-import { buildAugmentedPrompt, buildInstructionOnlyPrompt } from '../memory/injector';
+import { buildAugmentedPrompt, buildInstructionOnlyPrompt, renderUserInputBlock } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
 import { extractToolCalls, stripToolCalls } from './tool-parser';
@@ -1017,5 +1017,5 @@ function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation
 function wrapMemoryInput(memoryName: string, memoryContent: string, userInput: string): string {
   const header = `背景信息（记忆：${memoryName}）：\n${memoryContent}`;
   if (!userInput) return header;
-  return `${header}\n\n---\n\n以下是用户本次的输入：\n\n${userInput}`;
+  return `${header}\n\n---\n\n${renderUserInputBlock(userInput)}`;
 }

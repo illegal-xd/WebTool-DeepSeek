@@ -163,29 +163,46 @@ function showPopup() {
 
 function buildItems() {
   if (!popupEl) return;
+  const container = popupEl;
 
-  popupEl.innerHTML = filtered.map((p, i) => `
-    <div class="dpp-preset-item${i === activeIdx ? ' dpp-active' : ''}" data-i="${i}">
-      <div class="dpp-preset-head">
-        <code class="dpp-preset-trigger">@${escapeHtml(p.name)}</code>
-        ${p.id === 'close' ? '<span class="dpp-preset-badge close">系统</span>' : '<span class="dpp-preset-badge preset">预设</span>'}
-      </div>
-      <div class="dpp-preset-desc">${escapeHtml(p.id === 'close' ? p.content : p.content)}</div>
-    </div>
-  `).join('')
-    + '<div class="dpp-preset-hint">↑↓ 导航 · Enter 选择 · Esc 关闭</div>';
+  container.textContent = '';
+  filtered.forEach((p, i) => {
+    const item = document.createElement('div');
+    item.className = `dpp-preset-item${i === activeIdx ? ' dpp-active' : ''}`;
+    item.dataset.i = String(i);
 
-  popupEl.querySelectorAll('.dpp-preset-item').forEach(el => {
-    const i = parseInt((el as HTMLElement).dataset.i || '0');
-    el.addEventListener('mouseenter', () => {
+    const head = document.createElement('div');
+    head.className = 'dpp-preset-head';
+
+    const trigger = document.createElement('code');
+    trigger.className = 'dpp-preset-trigger';
+    trigger.textContent = `@${p.name}`;
+
+    const badge = document.createElement('span');
+    badge.className = p.id === 'close' ? 'dpp-preset-badge close' : 'dpp-preset-badge preset';
+    badge.textContent = p.id === 'close' ? '系统' : '预设';
+
+    const desc = document.createElement('div');
+    desc.className = 'dpp-preset-desc';
+    desc.textContent = p.content;
+
+    head.append(trigger, badge);
+    item.append(head, desc);
+    item.addEventListener('mouseenter', () => {
       activeIdx = i;
       highlightActive();
     });
-    el.addEventListener('mousedown', (e) => {
+    item.addEventListener('mousedown', (e) => {
       e.preventDefault();
       selectPreset(filtered[i]);
     });
+    container.appendChild(item);
   });
+
+  const hint = document.createElement('div');
+  hint.className = 'dpp-preset-hint';
+  hint.textContent = '↑↓ 导航 · Enter 选择 · Esc 关闭';
+  container.appendChild(hint);
 }
 
 function highlightActive() {
@@ -202,10 +219,6 @@ function hidePopup() {
 
 function isVisible() {
   return popupEl !== null && popupEl.style.display !== 'none';
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function injectStyles() {

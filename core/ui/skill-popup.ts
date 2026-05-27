@@ -142,28 +142,42 @@ function showPopup() {
 
 function buildItems() {
   if (!popupEl) return;
+  const container = popupEl;
 
-  popupEl.innerHTML = filtered.map((s, i) => `
-    <div class="dpp-skill-item${i === activeIdx ? ' dpp-active' : ''}" data-i="${i}">
-      <div class="dpp-skill-head">
-        <code class="dpp-skill-trigger">/${escapeHtml(s.name)}</code>
-      </div>
-      <div class="dpp-skill-desc">${escapeHtml(s.description)}</div>
-    </div>
-  `).join('')
-    + '<div class="dpp-skill-hint">↑↓ 导航 · Enter 选择 · Esc 关闭</div>';
+  container.textContent = '';
+  filtered.forEach((s, i) => {
+    const item = document.createElement('div');
+    item.className = `dpp-skill-item${i === activeIdx ? ' dpp-active' : ''}`;
+    item.dataset.i = String(i);
 
-  popupEl.querySelectorAll('.dpp-skill-item').forEach(el => {
-    const i = parseInt((el as HTMLElement).dataset.i || '0');
-    el.addEventListener('mouseenter', () => {
+    const head = document.createElement('div');
+    head.className = 'dpp-skill-head';
+
+    const trigger = document.createElement('code');
+    trigger.className = 'dpp-skill-trigger';
+    trigger.textContent = `/${s.name}`;
+
+    const desc = document.createElement('div');
+    desc.className = 'dpp-skill-desc';
+    desc.textContent = s.description;
+
+    head.appendChild(trigger);
+    item.append(head, desc);
+    item.addEventListener('mouseenter', () => {
       activeIdx = i;
       highlightActive();
     });
-    el.addEventListener('mousedown', (e) => {
+    item.addEventListener('mousedown', (e) => {
       e.preventDefault();
       selectSkill(filtered[i]);
     });
+    container.appendChild(item);
   });
+
+  const hint = document.createElement('div');
+  hint.className = 'dpp-skill-hint';
+  hint.textContent = '↑↓ 导航 · Enter 选择 · Esc 关闭';
+  container.appendChild(hint);
 }
 
 function highlightActive() {
@@ -180,10 +194,6 @@ function hidePopup() {
 
 function isVisible() {
   return popupEl !== null && popupEl.style.display !== 'none';
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function injectStyles() {

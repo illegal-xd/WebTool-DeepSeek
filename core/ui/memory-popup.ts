@@ -163,29 +163,46 @@ function showPopup() {
 
 function buildItems() {
   if (!popupEl) return;
+  const container = popupEl;
 
-  popupEl.innerHTML = filtered.map((m, i) => `
-    <div class="dpp-memory-item${i === activeIdx ? ' dpp-active' : ''}" data-i="${i}">
-      <div class="dpp-memory-head">
-        <code class="dpp-memory-trigger">#${escapeHtml(m.name)}</code>
-        <span class="dpp-memory-type ${escapeHtml(m.type)}">${escapeHtml(m.type)}</span>
-      </div>
-      <div class="dpp-memory-desc">${escapeHtml(m.content)}</div>
-    </div>
-  `).join('')
-    + '<div class="dpp-memory-hint">↑↓ 导航 · Enter 选择 · Esc 关闭</div>';
+  container.textContent = '';
+  filtered.forEach((m, i) => {
+    const item = document.createElement('div');
+    item.className = `dpp-memory-item${i === activeIdx ? ' dpp-active' : ''}`;
+    item.dataset.i = String(i);
 
-  popupEl.querySelectorAll('.dpp-memory-item').forEach(el => {
-    const i = parseInt((el as HTMLElement).dataset.i || '0');
-    el.addEventListener('mouseenter', () => {
+    const head = document.createElement('div');
+    head.className = 'dpp-memory-head';
+
+    const trigger = document.createElement('code');
+    trigger.className = 'dpp-memory-trigger';
+    trigger.textContent = `#${m.name}`;
+
+    const type = document.createElement('span');
+    type.className = `dpp-memory-type ${m.type}`;
+    type.textContent = m.type;
+
+    const desc = document.createElement('div');
+    desc.className = 'dpp-memory-desc';
+    desc.textContent = m.content;
+
+    head.append(trigger, type);
+    item.append(head, desc);
+    item.addEventListener('mouseenter', () => {
       activeIdx = i;
       highlightActive();
     });
-    el.addEventListener('mousedown', (e) => {
+    item.addEventListener('mousedown', (e) => {
       e.preventDefault();
       selectMemory(filtered[i]);
     });
+    container.appendChild(item);
   });
+
+  const hint = document.createElement('div');
+  hint.className = 'dpp-memory-hint';
+  hint.textContent = '↑↓ 导航 · Enter 选择 · Esc 关闭';
+  container.appendChild(hint);
 }
 
 function highlightActive() {
@@ -202,10 +219,6 @@ function hidePopup() {
 
 function isVisible() {
   return popupEl !== null && popupEl.style.display !== 'none';
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function injectStyles() {

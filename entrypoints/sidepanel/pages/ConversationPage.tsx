@@ -70,14 +70,25 @@ function scoreTitleMatch(title: string, query: string): number {
   return exactScore + prefixScore + positionScore + repeatScore + coverageScore;
 }
 
+function markdownHeadingText(text: string): string {
+  return text.replace(/[\r\n]+/g, ' ').replace(/^#+\s*/g, '').trim() || 'Untitled';
+}
+
+function markdownFence(content: string): string {
+  const ticks = content.match(/`{3,}/g)?.reduce((max, item) => Math.max(max, item.length), 2) ?? 2;
+  return '`'.repeat(ticks + 1);
+}
+
 function messagesToMarkdown(session: ConversationSession, messages: ConversationMessage[]): string {
-  const lines = [`# ${session.title}`, '', `- 会话 ID: ${session.id}`, `- 更新时间: ${formatDate(session.updatedAt)}`, ''];
+  const lines = [`# ${markdownHeadingText(session.title)}`, '', `- 会话 ID: ${session.id}`, `- 更新时间: ${formatDate(session.updatedAt)}`, ''];
   if (messages.length === 0) {
     lines.push('_未解析到历史消息_', '');
     return lines.join('\n');
   }
   for (const message of messages) {
-    lines.push(`## ${message.role}`, '', message.content || '', '');
+    const content = message.content || '';
+    const fence = markdownFence(content);
+    lines.push(`## ${markdownHeadingText(message.role)}`, '', fence, content, fence, '');
   }
   return lines.join('\n');
 }

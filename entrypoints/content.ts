@@ -342,6 +342,32 @@ function injectBlockStyles() {
   document.head.appendChild(style);
 }
 
+function createToolBlockItem(name: string, summary: string, status?: 'done' | 'error'): HTMLElement {
+  const item = document.createElement('div');
+  item.className = 'dpp-tb-item';
+  item.innerHTML = `
+    <div class="dpp-tb-dot-wrap">
+      <span class="dpp-tb-dot"></span>
+    </div>
+    <span class="dpp-tb-item-name"></span>
+    <span class="dpp-tb-item-summary"></span>
+  `;
+
+  const dot = item.querySelector('.dpp-tb-dot') as HTMLElement | null;
+  const nameEl = item.querySelector('.dpp-tb-item-name') as HTMLElement | null;
+  const summaryEl = item.querySelector('.dpp-tb-item-summary') as HTMLElement | null;
+
+  if (status) {
+    const stateClass = status === 'done' ? 'is-done' : 'is-error';
+    dot?.classList.add(stateClass);
+    nameEl?.classList.add(stateClass);
+  }
+  if (nameEl) nameEl.textContent = name;
+  if (summaryEl) summaryEl.textContent = summary;
+
+  return item;
+}
+
 function createToolBlock(call: ToolCall): HTMLElement {
   injectBlockStyles();
 
@@ -361,16 +387,10 @@ function createToolBlock(call: ToolCall): HTMLElement {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </span>
     </div>
-    <div class="dpp-tb-body">
-      <div class="dpp-tb-item">
-        <div class="dpp-tb-dot-wrap">
-                              <span class="dpp-tb-dot"></span>
-        </div>
-        <span class="dpp-tb-item-name">${escapeHtml(call.name)}</span>
-        <span class="dpp-tb-item-summary">执行中...</span>
-      </div>
-    </div>
+    <div class="dpp-tb-body"></div>
   `;
+
+  block.querySelector('.dpp-tb-body')?.appendChild(createToolBlockItem(call.name, '执行中...'));
 
   const header = block.querySelector('.dpp-tb-header') as HTMLElement;
   header.addEventListener('click', () => toggleBlockCollapse(block));
@@ -436,39 +456,21 @@ function addNewToolItem(block: HTMLElement, call: ToolCall, result: ToolCardResu
     countEl.textContent = String(count);
   }
 
-  const item = document.createElement('div');
-  item.className = 'dpp-tb-item';
-  item.innerHTML = `
-    <div class="dpp-tb-dot-wrap">
-                  <span class="dpp-tb-dot ${result.ok ? 'is-done' : 'is-error'}"></span>
-    </div>
-    <span class="dpp-tb-item-name ${result.ok ? 'is-done' : 'is-error'}">${escapeHtml(call.name)}</span>
-    <span class="dpp-tb-item-summary">${escapeHtml(result.detail || result.summary)}</span>
-  `;
-  body.appendChild(item);
+  body.appendChild(createToolBlockItem(call.name, result.detail || result.summary, result.ok ? 'done' : 'error'));
 }
 
 function addExecutingToolItem(block: HTMLElement, call: ToolCall) {
-	  const body = block.querySelector('.dpp-tb-body');
-	  if (!body) return;
+  const body = block.querySelector('.dpp-tb-body');
+  if (!body) return;
 
-	  const countEl = block.querySelector('.dpp-tb-count');
-	  if (countEl) {
-	    const count = parseInt(countEl.textContent || '1', 10) + 1;
-	    countEl.textContent = String(count);
-	  }
+  const countEl = block.querySelector('.dpp-tb-count');
+  if (countEl) {
+    const count = parseInt(countEl.textContent || '1', 10) + 1;
+    countEl.textContent = String(count);
+  }
 
-	  const item = document.createElement('div');
-	  item.className = 'dpp-tb-item';
-	  item.innerHTML = `
-	    <div class="dpp-tb-dot-wrap">
-	                  <span class="dpp-tb-dot"></span>
-	    </div>
-	    <span class="dpp-tb-item-name">${escapeHtml(call.name)}</span>
-	    <span class="dpp-tb-item-summary">执行中...</span>
-	  `;
-	  body.appendChild(item);
-	}
+  body.appendChild(createToolBlockItem(call.name, '执行中...'));
+}
 
 function renderEarlyToolPlaceholder(name: string, targetMessage?: Element) {
   const displayName = getToolDisplayName(name);
@@ -580,10 +582,10 @@ async function handleToolCall(call: ToolCall, callId: number) {
   }
 
   // New conversation turn — clear previous tool call state
-	  pendingCallMap.clear();
-	  resolvedCallRaws.clear();
-	  earlyPlaceholderNames.length = 0;
-	  const lastMsg = getLastAssistantMessage();
+  pendingCallMap.clear();
+  resolvedCallRaws.clear();
+  earlyPlaceholderNames.length = 0;
+  const lastMsg = getLastAssistantMessage();
   const block = createToolBlock(call);
   currentToolBlock = block;
 
@@ -942,18 +944,6 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
   block.className = BLOCK_CLASS;
   block.setAttribute('data-collapsed', 'false');
 
-  const itemsHtml = record.executions.map((exec) => {
-    const dotClass = exec.result.ok ? 'is-done' : 'is-error';
-    const nameClass = exec.result.ok ? 'is-done' : 'is-error';
-    return `<div class="dpp-tb-item">
-        <div class="dpp-tb-dot-wrap">
-          <span class="dpp-tb-dot ${dotClass}"></span>
-        </div>
-        <span class="dpp-tb-item-name ${nameClass}">${escapeHtml(exec.name)}</span>
-        <span class="dpp-tb-item-summary">${escapeHtml(exec.result.detail || exec.result.summary)}</span>
-      </div>`;
-  }).join('');
-
   block.innerHTML = `
       <div class="dpp-tb-header" role="button" tabindex="0" aria-expanded="true">
         <div class="dpp-tb-header-ripple"></div>
@@ -961,13 +951,21 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         </span>
         <span class="dpp-tb-title">工具调用</span>
-        <span class="dpp-tb-count">${record.executions.length}</span>
+        <span class="dpp-tb-count"></span>
         <span class="dpp-tb-chevron" aria-hidden="true">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </span>
       </div>
-      <div class="dpp-tb-body">${itemsHtml}</div>
+      <div class="dpp-tb-body"></div>
     `;
+
+  const countEl = block.querySelector('.dpp-tb-count');
+  if (countEl) countEl.textContent = String(record.executions.length);
+
+  const body = block.querySelector('.dpp-tb-body');
+  for (const exec of record.executions) {
+    body?.appendChild(createToolBlockItem(exec.name, exec.result.detail || exec.result.summary, exec.result.ok ? 'done' : 'error'));
+  }
 
   const header = block.querySelector('.dpp-tb-header') as HTMLElement;
   header.addEventListener('click', () => toggleBlockCollapse(block));
@@ -1565,10 +1563,6 @@ function applyBackground(config: BackgroundConfig | null) {
   if (!existingStyle) document.head.appendChild(styleEl);
 
   patchContainerBackgrounds();
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // ─── Tool Block CSS (DeepSeek Thinking-inspired) ──────────────────

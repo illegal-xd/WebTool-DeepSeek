@@ -48,8 +48,24 @@ def load_js_config_file(env_name: str, default_name: str) -> dict[str, Any]:
     if not config_path.exists():
         return {}
     script = """
-const configPath = process.argv[1];
-const config = require(configPath);
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const { createRequire } = require('module');
+
+const configPath = path.resolve(process.argv[1]);
+const moduleRef = { exports: {} };
+const sandbox = {
+  module: moduleRef,
+  exports: moduleRef.exports,
+  require: createRequire(configPath),
+  __filename: configPath,
+  __dirname: path.dirname(configPath),
+  console,
+  process,
+};
+vm.runInNewContext(fs.readFileSync(configPath, 'utf8'), sandbox, { filename: configPath });
+const config = moduleRef.exports && Object.keys(moduleRef.exports).length > 0 ? moduleRef.exports : sandbox.exports;
 if (!config || Array.isArray(config) || typeof config !== 'object') process.exit(2);
 process.stdout.write(JSON.stringify(config));
 """
@@ -192,6 +208,11 @@ class McpError(Exception):
 
 def log(message: str) -> None:
     print(f"[{SERVER_NAME}] {message}", file=sys.stderr, flush=True)
+
+
+def log_tool_call_error(name: Any, error: "McpError") -> None:
+    tool_name = name if isinstance(name, str) else "<invalid>"
+    log(f"tool call error: name={tool_name} code={error.code} message={error.message}")
 
 
 def write_message(message: dict[str, Any]) -> None:
@@ -664,7 +685,11 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
         if method == "tools/list":
             return success(request_id, {"tools": get_tools()})
         if method == "tools/call":
-            return success(request_id, handle_tools_call(params))
+            try:
+                return success(request_id, handle_tools_call(params))
+            except McpError as error:
+                log_tool_call_error(params.get("name"), error)
+                raise
         raise McpError(-32601, f"Method not found: {method}")
     except McpError as error:
         return failure(request_id, error)

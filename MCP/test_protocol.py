@@ -47,6 +47,8 @@ def main() -> int:
 
         empty_presets = workspace / "presets.json"
         empty_presets.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+        empty_js_config = workspace / "config.js"
+        empty_js_config.write_text("module.exports = {};\n", encoding="utf-8")
         external_config = workspace / "external-mcp.json"
         external_config.write_text(json.dumps({"services": {"web_search": {"enabled": False}}}), encoding="utf-8")
         main_config = workspace / "mcp.json"
@@ -78,7 +80,7 @@ def main() -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "DS_WORKSPACE": str(workspace), "MCP_CONFIG_PATH": str(main_config), "MCP_PRESETS_PATH": str(empty_presets)},
+            env={**os.environ, "DS_WORKSPACE": str(workspace), "MCP_CONFIG_PATH": str(main_config), "MCP_JS_CONFIG_PATH": str(empty_js_config), "MCP_PRESETS_PATH": str(empty_presets)},
         ) as process:
             init = assert_ok(
                 send(
@@ -151,6 +153,11 @@ def main() -> int:
             assert process.stdin is not None
             process.stdin.close()
             process.wait(timeout=5)
+            assert process.stderr is not None
+            stderr = process.stderr.read()
+            assert "tool call error: name=read_file" in stderr
+            assert "tool call error: name=execute_command" in stderr
+            assert "tool call error: name=echo" in stderr
 
         restricted_js_config = workspace / "config.js"
         restricted_js_config.write_text(

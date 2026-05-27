@@ -63,15 +63,21 @@ function createTag() {
 
   tagEl = document.createElement('div');
   tagEl.className = 'dpp-preset-tag';
-  tagEl.innerHTML = `
-    <span class="dpp-preset-tag-name">已启用：${escapeHtml(activeName)}</span>
-    <span class="dpp-preset-tag-close">&times;</span>
-  `;
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'dpp-preset-tag-name';
+  nameEl.textContent = `已启用：${activeName}`;
+
+  const closeEl = document.createElement('span');
+  closeEl.className = 'dpp-preset-tag-close';
+  closeEl.textContent = '×';
+
+  tagEl.append(nameEl, closeEl);
 
   document.body.appendChild(tagEl);
   positionTag();
 
-  tagEl.querySelector('.dpp-preset-tag-close')?.addEventListener('click', (e) => {
+  closeEl.addEventListener('click', (e) => {
     e.stopPropagation();
     deactivatePreset();
   });
@@ -105,10 +111,6 @@ function removeTag() {
   tagEl = null;
   window.removeEventListener('scroll', onScroll, true);
   window.removeEventListener('resize', onResize);
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 let stylesInjected = false;
