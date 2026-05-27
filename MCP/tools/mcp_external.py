@@ -201,7 +201,7 @@ class ExternalMCPProxy:
                 self._tools.append(error_tool(name, str(error)))
                 continue
             self._servers[name] = server
-            self._register_tools(name, server.tools)
+            self._register_tools(name, server.tools, config)
 
     def stop_all(self) -> None:
         for server in self._servers.values():
@@ -227,11 +227,15 @@ class ExternalMCPProxy:
         kind = config.get("type") or config.get("kind") or ("http" if config.get("url") else "stdio")
         return HTTPMCPServer(name, config) if kind in {"http", "streamable_http"} else StdioMCPServer(name, config)
 
-    def _register_tools(self, server_name: str, tools: list[dict[str, Any]]) -> None:
+    def _register_tools(self, server_name: str, tools: list[dict[str, Any]], config: dict[str, Any]) -> None:
+        configured_tools = config.get("tools")
+        allowed_names = {item for item in configured_tools if isinstance(item, str)} if isinstance(configured_tools, list) else None
         for tool in tools:
             if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
                 continue
             original_name = tool["name"]
+            if allowed_names is not None and original_name not in allowed_names:
+                continue
             exposed_name = original_name if original_name not in self._tool_to_server and original_name not in self._reserved_tool_names else f"{server_name}_{original_name}"
             descriptor = dict(tool)
             descriptor["name"] = exposed_name

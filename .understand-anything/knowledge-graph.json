@@ -1,0 +1,471 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "WebTool-DeepSeek",
+    "languages": [
+      "typescript",
+      "tsx",
+      "python",
+      "javascript",
+      "markdown",
+      "json",
+      "yaml",
+      "css",
+      "html"
+    ],
+    "frameworks": [
+      "WXT",
+      "React",
+      "Chrome Extension",
+      "MCP"
+    ],
+    "description": "为 DeepSeek 网页版注入 Agentic 记忆系统、Skill 技能系统、系统提示词预设、对话管理和 MCP 服务系统的 Chrome 扩展。",
+    "analyzedAt": "2026-05-26T15:35:00Z",
+    "gitCommitHash": "54957a4912d09668a8868b89c29ddb226a4ef815"
+  },
+  "nodes": [
+    {
+      "id": "document:README.md",
+      "type": "document",
+      "name": "README.md",
+      "filePath": "README.md",
+      "summary": "项目说明文档，介绍 WebTool-DeepSeek 的目标、核心功能和记忆注入策略。",
+      "tags": ["docs", "overview"]
+    },
+    {
+      "id": "config:package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "package.json",
+      "summary": "定义扩展包元信息、WXT 构建脚本、TypeScript 编译脚本和 Python MCP 本地服务脚本。",
+      "tags": ["config", "package"]
+    },
+    {
+      "id": "config:wxt.config.ts",
+      "type": "config",
+      "name": "wxt.config.ts",
+      "filePath": "wxt.config.ts",
+      "summary": "WXT 扩展构建配置，连接浏览器扩展入口与构建产物。",
+      "tags": ["config", "wxt"]
+    },
+    {
+      "id": "file:entrypoints/background.ts",
+      "type": "file",
+      "name": "background.ts",
+      "filePath": "entrypoints/background.ts",
+      "summary": "浏览器扩展后台入口，协调会话缓存、工具执行、存储访问与页面消息。",
+      "tags": ["entrypoint", "background", "extension"]
+    },
+    {
+      "id": "file:entrypoints/content.ts",
+      "type": "file",
+      "name": "content.ts",
+      "filePath": "entrypoints/content.ts",
+      "summary": "内容脚本入口，注入页面增强能力并连接 DeepSeek 页面与扩展后台逻辑。",
+      "tags": ["entrypoint", "content-script"]
+    },
+    {
+      "id": "file:entrypoints/main-world.content.ts",
+      "type": "file",
+      "name": "main-world.content.ts",
+      "filePath": "entrypoints/main-world.content.ts",
+      "summary": "主页面执行环境脚本，用于在网页上下文中桥接网络或运行时行为。",
+      "tags": ["entrypoint", "main-world"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/main.tsx",
+      "type": "file",
+      "name": "sidepanel/main.tsx",
+      "filePath": "entrypoints/sidepanel/main.tsx",
+      "summary": "侧边栏 React 应用挂载入口。",
+      "tags": ["entrypoint", "react", "sidepanel"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/App.tsx",
+      "type": "file",
+      "name": "sidepanel/App.tsx",
+      "filePath": "entrypoints/sidepanel/App.tsx",
+      "summary": "侧边栏应用根组件，组织导航、页面切换和全局 UI 状态。",
+      "tags": ["ui", "react", "sidepanel"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/pages/ConversationPage.tsx",
+      "type": "file",
+      "name": "ConversationPage.tsx",
+      "filePath": "entrypoints/sidepanel/pages/ConversationPage.tsx",
+      "summary": "对话管理页面，支持会话列表、导出、合并和标题处理。",
+      "tags": ["ui", "conversation"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/pages/MemoryPage.tsx",
+      "type": "file",
+      "name": "MemoryPage.tsx",
+      "filePath": "entrypoints/sidepanel/pages/MemoryPage.tsx",
+      "summary": "记忆管理页面，展示和维护长期记忆数据。",
+      "tags": ["ui", "memory"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/pages/SkillPage.tsx",
+      "type": "file",
+      "name": "SkillPage.tsx",
+      "filePath": "entrypoints/sidepanel/pages/SkillPage.tsx",
+      "summary": "Skill 管理页面，展示、启用和配置专家模式或指令能力。",
+      "tags": ["ui", "skill"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/pages/PresetPage.tsx",
+      "type": "file",
+      "name": "PresetPage.tsx",
+      "filePath": "entrypoints/sidepanel/pages/PresetPage.tsx",
+      "summary": "系统提示词预设管理页面。",
+      "tags": ["ui", "preset"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/pages/McpPage.tsx",
+      "type": "file",
+      "name": "McpPage.tsx",
+      "filePath": "entrypoints/sidepanel/pages/McpPage.tsx",
+      "summary": "MCP 服务管理页面，用于查看和配置 MCP 连接。",
+      "tags": ["ui", "mcp"]
+    },
+    {
+      "id": "file:entrypoints/sidepanel/pages/SettingsPage.tsx",
+      "type": "file",
+      "name": "SettingsPage.tsx",
+      "filePath": "entrypoints/sidepanel/pages/SettingsPage.tsx",
+      "summary": "设置页面，集中管理扩展行为、主题和配置项。",
+      "tags": ["ui", "settings"]
+    },
+    {
+      "id": "file:core/memory/store.ts",
+      "type": "file",
+      "name": "memory/store.ts",
+      "filePath": "core/memory/store.ts",
+      "summary": "记忆数据存储模块，负责长期记忆的持久化读写。",
+      "tags": ["core", "memory", "storage"]
+    },
+    {
+      "id": "file:core/memory/injector.ts",
+      "type": "file",
+      "name": "memory/injector.ts",
+      "filePath": "core/memory/injector.ts",
+      "summary": "记忆注入模块，根据上下文把相关记忆组织进提示词。",
+      "tags": ["core", "memory", "prompt"]
+    },
+    {
+      "id": "file:core/memory/selector.ts",
+      "type": "file",
+      "name": "memory/selector.ts",
+      "filePath": "core/memory/selector.ts",
+      "summary": "记忆选择模块，负责按权重、相关性和预算挑选可注入记忆。",
+      "tags": ["core", "memory", "ranking"]
+    },
+    {
+      "id": "file:core/skill/registry.ts",
+      "type": "file",
+      "name": "skill/registry.ts",
+      "filePath": "core/skill/registry.ts",
+      "summary": "Skill 注册表，管理可用技能、解析结果和调用入口。",
+      "tags": ["core", "skill"]
+    },
+    {
+      "id": "file:core/skill/parser.ts",
+      "type": "file",
+      "name": "skill/parser.ts",
+      "filePath": "core/skill/parser.ts",
+      "summary": "Skill 指令解析模块，识别用户输入中的 slash command 或技能调用。",
+      "tags": ["core", "skill", "parser"]
+    },
+    {
+      "id": "file:core/preset/store.ts",
+      "type": "file",
+      "name": "preset/store.ts",
+      "filePath": "core/preset/store.ts",
+      "summary": "系统提示词预设存储模块。",
+      "tags": ["core", "preset", "storage"]
+    },
+    {
+      "id": "file:core/conversation/api.ts",
+      "type": "file",
+      "name": "conversation/api.ts",
+      "filePath": "core/conversation/api.ts",
+      "summary": "DeepSeek 会话 API 适配层，负责会话列表、分页游标和消息结构标准化。",
+      "tags": ["core", "conversation", "api"]
+    },
+    {
+      "id": "file:core/conversation/store.ts",
+      "type": "file",
+      "name": "conversation/store.ts",
+      "filePath": "core/conversation/store.ts",
+      "summary": "对话会话相关的本地状态和持久化存储。",
+      "tags": ["core", "conversation", "storage"]
+    },
+    {
+      "id": "file:core/interceptor/fetch-hook.ts",
+      "type": "file",
+      "name": "interceptor/fetch-hook.ts",
+      "filePath": "core/interceptor/fetch-hook.ts",
+      "summary": "网络拦截核心，识别 DeepSeek 流式响应并将工具调用交给运行时处理。",
+      "tags": ["core", "interceptor", "fetch", "sse"]
+    },
+    {
+      "id": "file:core/interceptor/sse-parser.ts",
+      "type": "file",
+      "name": "interceptor/sse-parser.ts",
+      "filePath": "core/interceptor/sse-parser.ts",
+      "summary": "SSE 响应解析器，把流式片段转换为可消费事件。",
+      "tags": ["core", "interceptor", "sse"]
+    },
+    {
+      "id": "file:core/interceptor/tool-parser.ts",
+      "type": "file",
+      "name": "interceptor/tool-parser.ts",
+      "filePath": "core/interceptor/tool-parser.ts",
+      "summary": "工具调用解析器，从模型输出中识别 XML/JSON 工具调用块。",
+      "tags": ["core", "tool", "parser"]
+    },
+    {
+      "id": "file:core/tool/runtime.ts",
+      "type": "file",
+      "name": "tool/runtime.ts",
+      "filePath": "core/tool/runtime.ts",
+      "summary": "工具运行时，调度内置工具和扩展工具的执行。",
+      "tags": ["core", "tool", "runtime"]
+    },
+    {
+      "id": "file:core/tool/invocation.ts",
+      "type": "file",
+      "name": "tool/invocation.ts",
+      "filePath": "core/tool/invocation.ts",
+      "summary": "工具调用数据结构和调用生命周期处理。",
+      "tags": ["core", "tool", "invocation"]
+    },
+    {
+      "id": "file:core/tool/memory.ts",
+      "type": "file",
+      "name": "tool/memory.ts",
+      "filePath": "core/tool/memory.ts",
+      "summary": "记忆相关工具实现，为模型提供保存、更新和删除记忆的能力。",
+      "tags": ["core", "tool", "memory"]
+    },
+    {
+      "id": "file:core/mcp/client.ts",
+      "type": "file",
+      "name": "mcp/client.ts",
+      "filePath": "core/mcp/client.ts",
+      "summary": "浏览器侧 MCP 客户端，封装与 MCP 服务的连接和请求。",
+      "tags": ["core", "mcp", "client"]
+    },
+    {
+      "id": "file:core/mcp/store.ts",
+      "type": "file",
+      "name": "mcp/store.ts",
+      "filePath": "core/mcp/store.ts",
+      "summary": "MCP 配置和连接状态的本地存储。",
+      "tags": ["core", "mcp", "storage"]
+    },
+    {
+      "id": "file:core/mcp/discovery.ts",
+      "type": "file",
+      "name": "mcp/discovery.ts",
+      "filePath": "core/mcp/discovery.ts",
+      "summary": "MCP 服务发现逻辑。",
+      "tags": ["core", "mcp", "discovery"]
+    },
+    {
+      "id": "file:MCP/server.py",
+      "type": "file",
+      "name": "MCP/server.py",
+      "filePath": "MCP/server.py",
+      "summary": "Python MCP 服务入口，提供本地工具协议服务。",
+      "tags": ["python", "mcp", "server"]
+    },
+    {
+      "id": "file:MCP/http_server.py",
+      "type": "file",
+      "name": "MCP/http_server.py",
+      "filePath": "MCP/http_server.py",
+      "summary": "HTTP 协议包装服务，用于以 HTTP 方式暴露 MCP 能力。",
+      "tags": ["python", "mcp", "http"]
+    },
+    {
+      "id": "file:MCP/tools/search.py",
+      "type": "file",
+      "name": "MCP/tools/search.py",
+      "filePath": "MCP/tools/search.py",
+      "summary": "MCP 搜索工具实现。",
+      "tags": ["python", "mcp", "tool"]
+    },
+    {
+      "id": "file:MCP/tools/shell.py",
+      "type": "file",
+      "name": "MCP/tools/shell.py",
+      "filePath": "MCP/tools/shell.py",
+      "summary": "MCP shell 工具实现。",
+      "tags": ["python", "mcp", "tool"]
+    },
+    {
+      "id": "file:MCP/tools/mcp_external.py",
+      "type": "file",
+      "name": "MCP/tools/mcp_external.py",
+      "filePath": "MCP/tools/mcp_external.py",
+      "summary": "外部 MCP 工具桥接实现。",
+      "tags": ["python", "mcp", "bridge"]
+    }
+  ],
+  "edges": [
+    {"source": "document:README.md", "target": "config:package.json", "type": "documents", "weight": 0.5},
+    {"source": "config:package.json", "target": "config:wxt.config.ts", "type": "configures", "weight": 0.6},
+    {"source": "config:wxt.config.ts", "target": "file:entrypoints/background.ts", "type": "configures", "weight": 0.6},
+    {"source": "config:wxt.config.ts", "target": "file:entrypoints/content.ts", "type": "configures", "weight": 0.6},
+    {"source": "config:wxt.config.ts", "target": "file:entrypoints/sidepanel/main.tsx", "type": "configures", "weight": 0.6},
+    {"source": "file:entrypoints/sidepanel/main.tsx", "target": "file:entrypoints/sidepanel/App.tsx", "type": "imports", "weight": 0.7},
+    {"source": "file:entrypoints/sidepanel/App.tsx", "target": "file:entrypoints/sidepanel/pages/ConversationPage.tsx", "type": "imports", "weight": 0.7},
+    {"source": "file:entrypoints/sidepanel/App.tsx", "target": "file:entrypoints/sidepanel/pages/MemoryPage.tsx", "type": "imports", "weight": 0.7},
+    {"source": "file:entrypoints/sidepanel/App.tsx", "target": "file:entrypoints/sidepanel/pages/SkillPage.tsx", "type": "imports", "weight": 0.7},
+    {"source": "file:entrypoints/sidepanel/App.tsx", "target": "file:entrypoints/sidepanel/pages/PresetPage.tsx", "type": "imports", "weight": 0.7},
+    {"source": "file:entrypoints/sidepanel/App.tsx", "target": "file:entrypoints/sidepanel/pages/McpPage.tsx", "type": "imports", "weight": 0.7},
+    {"source": "file:entrypoints/sidepanel/App.tsx", "target": "file:entrypoints/sidepanel/pages/SettingsPage.tsx", "type": "imports", "weight": 0.7},
+    {"source": "file:entrypoints/sidepanel/pages/ConversationPage.tsx", "target": "file:core/conversation/api.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:entrypoints/sidepanel/pages/MemoryPage.tsx", "target": "file:core/memory/store.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:entrypoints/sidepanel/pages/SkillPage.tsx", "target": "file:core/skill/registry.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:entrypoints/sidepanel/pages/PresetPage.tsx", "target": "file:core/preset/store.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:entrypoints/sidepanel/pages/McpPage.tsx", "target": "file:core/mcp/store.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:entrypoints/content.ts", "target": "file:core/interceptor/fetch-hook.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/interceptor/fetch-hook.ts", "target": "file:core/interceptor/sse-parser.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/interceptor/fetch-hook.ts", "target": "file:core/interceptor/tool-parser.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/interceptor/tool-parser.ts", "target": "file:core/tool/runtime.ts", "type": "triggers", "weight": 0.6},
+    {"source": "file:core/tool/runtime.ts", "target": "file:core/tool/invocation.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/tool/runtime.ts", "target": "file:core/tool/memory.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/tool/memory.ts", "target": "file:core/memory/store.ts", "type": "writes_to", "weight": 0.5},
+    {"source": "file:core/memory/injector.ts", "target": "file:core/memory/selector.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/memory/selector.ts", "target": "file:core/memory/store.ts", "type": "reads_from", "weight": 0.5},
+    {"source": "file:entrypoints/background.ts", "target": "file:core/conversation/store.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:entrypoints/background.ts", "target": "file:core/tool/runtime.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:entrypoints/background.ts", "target": "file:core/mcp/client.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/mcp/client.ts", "target": "file:core/mcp/discovery.ts", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/mcp/client.ts", "target": "file:core/mcp/store.ts", "type": "reads_from", "weight": 0.5},
+    {"source": "file:MCP/http_server.py", "target": "file:MCP/server.py", "type": "serves", "weight": 0.5},
+    {"source": "file:MCP/server.py", "target": "file:MCP/tools/search.py", "type": "depends_on", "weight": 0.6},
+    {"source": "file:MCP/server.py", "target": "file:MCP/tools/shell.py", "type": "depends_on", "weight": 0.6},
+    {"source": "file:MCP/server.py", "target": "file:MCP/tools/mcp_external.py", "type": "depends_on", "weight": 0.6},
+    {"source": "file:core/mcp/client.ts", "target": "file:MCP/http_server.py", "type": "depends_on", "weight": 0.6}
+  ],
+  "layers": [
+    {
+      "id": "layer:documentation-and-config",
+      "name": "文档与配置",
+      "description": "项目说明、包配置和 WXT 构建配置。",
+      "nodeIds": [
+        "document:README.md",
+        "config:package.json",
+        "config:wxt.config.ts"
+      ]
+    },
+    {
+      "id": "layer:extension-entrypoints",
+      "name": "浏览器扩展入口",
+      "description": "WXT/Chrome Extension 的 background、content script、main world 和 sidepanel 挂载入口。",
+      "nodeIds": [
+        "file:entrypoints/background.ts",
+        "file:entrypoints/content.ts",
+        "file:entrypoints/main-world.content.ts",
+        "file:entrypoints/sidepanel/main.tsx"
+      ]
+    },
+    {
+      "id": "layer:sidepanel-ui",
+      "name": "侧边栏界面",
+      "description": "React 侧边栏应用和各业务页面。",
+      "nodeIds": [
+        "file:entrypoints/sidepanel/App.tsx",
+        "file:entrypoints/sidepanel/pages/ConversationPage.tsx",
+        "file:entrypoints/sidepanel/pages/MemoryPage.tsx",
+        "file:entrypoints/sidepanel/pages/SkillPage.tsx",
+        "file:entrypoints/sidepanel/pages/PresetPage.tsx",
+        "file:entrypoints/sidepanel/pages/McpPage.tsx",
+        "file:entrypoints/sidepanel/pages/SettingsPage.tsx"
+      ]
+    },
+    {
+      "id": "layer:core-domain",
+      "name": "核心领域逻辑",
+      "description": "记忆、Skill、预设、对话、拦截器和工具运行时等扩展核心能力。",
+      "nodeIds": [
+        "file:core/memory/store.ts",
+        "file:core/memory/injector.ts",
+        "file:core/memory/selector.ts",
+        "file:core/skill/registry.ts",
+        "file:core/skill/parser.ts",
+        "file:core/preset/store.ts",
+        "file:core/conversation/api.ts",
+        "file:core/conversation/store.ts",
+        "file:core/interceptor/fetch-hook.ts",
+        "file:core/interceptor/sse-parser.ts",
+        "file:core/interceptor/tool-parser.ts",
+        "file:core/tool/runtime.ts",
+        "file:core/tool/invocation.ts",
+        "file:core/tool/memory.ts",
+        "file:core/mcp/client.ts",
+        "file:core/mcp/store.ts",
+        "file:core/mcp/discovery.ts"
+      ]
+    },
+    {
+      "id": "layer:python-mcp-service",
+      "name": "Python MCP 服务",
+      "description": "本地 MCP 服务、HTTP 包装和工具实现。",
+      "nodeIds": [
+        "file:MCP/server.py",
+        "file:MCP/http_server.py",
+        "file:MCP/tools/search.py",
+        "file:MCP/tools/shell.py",
+        "file:MCP/tools/mcp_external.py"
+      ]
+    }
+  ],
+  "tour": [
+    {
+      "order": 1,
+      "title": "项目目标与能力",
+      "description": "从 README 了解扩展如何为 DeepSeek 网页版加入记忆、Skill、预设、对话管理和 MCP 能力。",
+      "nodeIds": ["document:README.md", "config:package.json"]
+    },
+    {
+      "order": 2,
+      "title": "浏览器扩展启动路径",
+      "description": "查看 WXT 配置如何连接 background、content script 和 sidepanel 入口。",
+      "nodeIds": ["config:wxt.config.ts", "file:entrypoints/background.ts", "file:entrypoints/content.ts", "file:entrypoints/sidepanel/main.tsx"]
+    },
+    {
+      "order": 3,
+      "title": "侧边栏产品界面",
+      "description": "通过 App 和各页面理解用户如何管理对话、记忆、Skill、预设、MCP 和设置。",
+      "nodeIds": ["file:entrypoints/sidepanel/App.tsx", "file:entrypoints/sidepanel/pages/MemoryPage.tsx", "file:entrypoints/sidepanel/pages/SkillPage.tsx", "file:entrypoints/sidepanel/pages/McpPage.tsx"]
+    },
+    {
+      "order": 4,
+      "title": "工具调用与流式拦截",
+      "description": "跟踪 content script、fetch hook、SSE parser 和 tool runtime 如何识别并执行模型输出的工具调用。",
+      "nodeIds": ["file:entrypoints/content.ts", "file:core/interceptor/fetch-hook.ts", "file:core/interceptor/sse-parser.ts", "file:core/interceptor/tool-parser.ts", "file:core/tool/runtime.ts"]
+    },
+    {
+      "order": 5,
+      "title": "记忆系统",
+      "description": "理解记忆如何被存储、选择、注入，以及如何通过工具调用写入。",
+      "nodeIds": ["file:core/memory/store.ts", "file:core/memory/selector.ts", "file:core/memory/injector.ts", "file:core/tool/memory.ts"]
+    },
+    {
+      "order": 6,
+      "title": "MCP 集成",
+      "description": "查看浏览器侧 MCP 客户端如何连接 Python 本地 MCP/HTTP 服务和工具实现。",
+      "nodeIds": ["file:core/mcp/client.ts", "file:core/mcp/store.ts", "file:MCP/http_server.py", "file:MCP/server.py"]
+    }
+  ],
+  "warnings": [
+    "project-scanner 子代理连续两次因 API provider 错误失败；本图谱为基于 CodeGraph 和本地文件清单生成的部分图谱。",
+    "Phase 2-5 的 LLM 文件分析、assemble review、architecture analyzer 和 tour builder 未完整运行；节点与边覆盖核心架构，不代表完整文件清单。",
+    "未写入 meta.json 和 fingerprint baseline，避免未来增量更新误判为完整分析结果。",
+    "dashboard 未自动启动；建议修复子代理模型提供方错误后重新运行 /understand --full --language zh。"
+  ]
+}

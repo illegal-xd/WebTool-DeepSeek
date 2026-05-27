@@ -152,6 +152,51 @@ def main() -> int:
             process.stdin.close()
             process.wait(timeout=5)
 
+        restricted_js_config = workspace / "config.js"
+        restricted_js_config.write_text(
+            """
+module.exports = {
+  services: {
+    shell: { tools: ['get_cwd'] },
+    web_search: { enabled: false },
+  },
+  mcpServers: {
+    nested: { tools: ['ping'] },
+  },
+};
+""".strip(),
+            encoding="utf-8",
+        )
+        with subprocess.Popen(
+            [sys.executable, str(SERVER)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={
+                **os.environ,
+                "DS_WORKSPACE": str(workspace),
+                "MCP_CONFIG_PATH": str(main_config),
+                "MCP_JS_CONFIG_PATH": str(restricted_js_config),
+                "MCP_PRESETS_PATH": str(empty_presets),
+            },
+        ) as process:
+            tools = assert_ok(send(process, {"jsonrpc": "2.0", "id": 30, "method": "tools/list", "params": {}}), 30)
+            tool_names = {tool["name"] for tool in tools["tools"]}
+            assert "get_cwd" in tool_names
+            assert "list_directory" not in tool_names
+            assert "bing_search" not in tool_names
+            assert "nested_ping" in tool_names
+            assert "nested_echo" not in tool_names
+
+            assert_ok(send(process, {"jsonrpc": "2.0", "id": 31, "method": "tools/call", "params": {"name": "get_cwd", "arguments": {}}}), 31)
+            assert_ok(send(process, {"jsonrpc": "2.0", "id": 32, "method": "tools/call", "params": {"name": "nested_ping", "arguments": {}}}), 32)
+            assert_error(send(process, {"jsonrpc": "2.0", "id": 33, "method": "tools/call", "params": {"name": "list_directory", "arguments": {"path": "."}}}), 33, -32601)
+
+            assert process.stdin is not None
+            process.stdin.close()
+            process.wait(timeout=5)
+
     print("ok - initialize, tools/list, and tools/call all passed")
     return 0
 

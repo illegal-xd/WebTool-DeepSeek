@@ -17,7 +17,9 @@
       "Bash(agent-browser snapshot *)",
       "Bash(agent-browser --allow-file-access open \"file:///Users/allen/Desktop/github/WebTool-DeepSeek/dist/chrome-mv3/sidepanel.html\")",
       "Bash(agent-browser screenshot *)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "mcp__codegraph__codegraph_files",
+      "mcp__codegraph__codegraph_explore"
     ]
   }
 }

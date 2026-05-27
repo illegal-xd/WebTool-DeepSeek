@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 import re
-import ssl
+import subprocess
 import sys
 import time
 import urllib.request
@@ -43,6 +43,35 @@ def load_json_file(env_name: str, default_name: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def load_js_config_file(env_name: str, default_name: str) -> dict[str, Any]:
+    config_path = Path(os.environ.get(env_name) or ROOT / default_name)
+    if not config_path.exists():
+        return {}
+    script = """
+const configPath = process.argv[1];
+const config = require(configPath);
+if (!config || Array.isArray(config) || typeof config !== 'object') process.exit(2);
+process.stdout.write(JSON.stringify(config));
+"""
+    try:
+        output = subprocess.check_output(["node", "-e", script, str(config_path)], text=True, timeout=5)
+        data = json.loads(output)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def merge_config(*configs: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for config in configs:
+        for key, value in config.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = merge_config(merged[key], value)
+            else:
+                merged[key] = value
+    return merged
+
+
 def merge_mcp_servers(*configs: dict[str, Any]) -> dict[str, Any]:
     servers: dict[str, Any] = {}
     for config in configs:
@@ -53,7 +82,9 @@ def merge_mcp_servers(*configs: dict[str, Any]) -> dict[str, Any]:
 
 
 PRESETS = load_json_file("MCP_PRESETS_PATH", "presets.json")
-CONFIG = load_json_file("MCP_CONFIG_PATH", "mcp.json")
+JSON_CONFIG = load_json_file("MCP_CONFIG_PATH", "mcp.json")
+JS_CONFIG = load_js_config_file("MCP_JS_CONFIG_PATH", "config.js")
+CONFIG = merge_config(JSON_CONFIG, JS_CONFIG)
 
 
 CORE_TOOL_DEFINITIONS: list[dict[str, Any]] = [

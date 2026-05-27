@@ -58,6 +58,53 @@ cp mcp.json.example mcp.json
 
 `mcp.json` 可继续追加或覆盖同名外部 MCP 服务；如果同名，`mcp.json` 优先。
 
+`config.js` 用来配置哪些工具对 MCP 客户端开放。服务启动时会先读取 `mcp.json`，再读取 `config.js`，同名配置以 `config.js` 为准；如果需要指定其他路径，可设置 `MCP_JS_CONFIG_PATH`。
+
+默认 `config.js` 是可编辑模板：
+
+```js
+module.exports = {
+  services: {
+    // shell: { tools: ['get_cwd', 'list_directory', 'read_file', 'write_file', 'execute_command'] },
+    // web_search: { tools: ['bing_search', 'crawl_webpage'] },
+  },
+  mcpServers: {
+    // example: { command: 'node', args: ['server.js'], tools: ['tool_name'] },
+  },
+};
+```
+
+内置服务支持两种限制方式：
+
+```js
+module.exports = {
+  services: {
+    shell: { tools: ['get_cwd', 'read_file'] },
+    web_search: { enabled: false },
+  },
+};
+```
+
+- `enabled: false`：禁用整个服务。
+- `tools: [...]`：只开放列出的工具；未配置 `tools` 时开放该服务的全部工具。
+
+外部 MCP 服务也支持 `tools` allowlist，按外部服务返回的原始工具名过滤：
+
+```js
+module.exports = {
+  mcpServers: {
+    my_stdio: {
+      type: 'stdio',
+      command: 'python3',
+      args: ['/path/to/server.py'],
+      tools: ['ping'],
+    },
+  },
+};
+```
+
+未列入 allowlist 的工具不会出现在 `tools/list`，调用时会返回 `Unknown tool`。
+
 `services.web_search.config.bing_api_key` 用于配置 Bing Search API Key。未配置时，`bing_search` 会返回可读提示，不会发起搜索请求。
 
 `mcpServers` 可配置额外外部 MCP 服务：
