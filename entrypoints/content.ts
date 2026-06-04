@@ -1753,6 +1753,9 @@ const BLOCK_CSS = `
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-width: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-bottom: 10px;
 }
 
 /* ── Dark Mode ───────────────────────────────────────────────── */

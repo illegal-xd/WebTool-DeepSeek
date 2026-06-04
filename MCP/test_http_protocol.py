@@ -80,6 +80,22 @@ def main() -> int:
 
         empty_presets = workspace / "presets.json"
         empty_presets.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+        js_config = workspace / "config.js"
+        js_config.write_text(
+            """
+module.exports = {
+  tools: ['echo', 'add', 'stock_tech', 'skill_usage_stats'],
+  services: {
+    shell: { tools: ['get_cwd', 'list_directory', 'read_file', 'write_file', 'execute_command'] },
+    web_search: { tools: ['bing_search', 'crawl_webpage'] },
+  },
+  mcpServers: {
+    nested: { tools: ['ping'] },
+  },
+};
+""".strip(),
+            encoding="utf-8",
+        )
         external_config = workspace / "external-mcp.json"
         external_config.write_text(json.dumps({"services": {"web_search": {"enabled": False}}}), encoding="utf-8")
         main_config = workspace / "mcp.json"
@@ -112,7 +128,7 @@ def main() -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "DS_WORKSPACE": str(workspace), "MCP_CONFIG_PATH": str(main_config), "MCP_PRESETS_PATH": str(empty_presets)},
+            env={**os.environ, "DS_WORKSPACE": str(workspace), "MCP_CONFIG_PATH": str(main_config), "MCP_JS_CONFIG_PATH": str(js_config), "MCP_PRESETS_PATH": str(empty_presets)},
         )
         try:
             wait_for_health(base_url, process)
@@ -136,7 +152,7 @@ def main() -> int:
             status, tools = post_json(base_url, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
             assert status == 200
             tool_names = {tool["name"] for tool in assert_ok(tools, 2)["tools"]}
-            assert {"ping", "echo", "add"}.issubset(tool_names)
+            assert {"ping", "echo", "add", "stock_tech", "skill_usage_stats"}.issubset(tool_names)
             assert {"get_cwd", "list_directory", "read_file", "write_file", "execute_command"}.issubset(tool_names)
             assert {"bing_search", "crawl_webpage", "nested_ping"}.issubset(tool_names)
 
@@ -195,6 +211,8 @@ def main() -> int:
             assert "event: endpoint" in body
             assert "data: /mcp" in body
             assert "event: server" in body
+            assert "stock_tech" in body
+            assert "skill_usage_stats" in body
             assert "bing_search" in body
             assert "crawl_webpage" in body
             assert "nested_ping" in body

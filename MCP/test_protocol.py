@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,11 +45,45 @@ def main() -> int:
         workspace = Path(temp_dir).resolve()
         (workspace / "nested").mkdir()
         (workspace / "seed.txt").write_text("hello workspace", encoding="utf-8")
+        test_home = workspace / "home"
+        claude_project = test_home / ".claude" / "projects" / "demo"
+        claude_project.mkdir(parents=True)
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        claude_records = [
+            {
+                "type": "user",
+                "timestamp": timestamp,
+                "message": {"content": [{"type": "tool_result", "content": "Launching skill: kimi-webbridge"}]},
+            },
+            {
+                "type": "user",
+                "timestamp": timestamp,
+                "message": {"content": [{"type": "tool_result", "content": "Launching skill: deep-research"}]},
+            },
+        ]
+        (claude_project / "session.jsonl").write_text("\n".join(json.dumps(record) for record in claude_records), encoding="utf-8")
+        aspire_logs = test_home / "Library" / "Logs" / "ai.aspirecode.desktop"
+        aspire_logs.mkdir(parents=True)
+        (aspire_logs / "opencode-desktop_fixture.log").write_text(f"{timestamp} info service=skill name=verify\n", encoding="utf-8")
 
         empty_presets = workspace / "presets.json"
         empty_presets.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
         empty_js_config = workspace / "config.js"
-        empty_js_config.write_text("module.exports = {};\n", encoding="utf-8")
+        empty_js_config.write_text(
+            """
+module.exports = {
+  tools: ['echo', 'add', 'stock_tech', 'skill_usage_stats'],
+  services: {
+    shell: { tools: ['get_cwd', 'list_directory', 'read_file', 'write_file', 'execute_command'] },
+    web_search: { tools: ['bing_search', 'crawl_webpage'] },
+  },
+  mcpServers: {
+    nested: { tools: ['ping'] },
+  },
+};
+""".strip(),
+            encoding="utf-8",
+        )
         external_config = workspace / "external-mcp.json"
         external_config.write_text(json.dumps({"services": {"web_search": {"enabled": False}}}), encoding="utf-8")
         main_config = workspace / "mcp.json"
@@ -102,7 +137,7 @@ def main() -> int:
 
             tools = assert_ok(send(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}), 2)
             tool_names = {tool["name"] for tool in tools["tools"]}
-            assert {"ping", "echo", "add"}.issubset(tool_names)
+            assert {"ping", "echo", "add", "stock_tech", "skill_usage_stats"}.issubset(tool_names)
             assert {"get_cwd", "list_directory", "read_file", "write_file", "execute_command"}.issubset(tool_names)
             assert {"bing_search", "crawl_webpage", "nested_ping"}.issubset(tool_names)
 
@@ -114,6 +149,22 @@ def main() -> int:
 
             add = assert_ok(send(process, {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "add", "arguments": {"a": 2, "b": 3.5}}}), 5)
             assert add["structuredContent"]["sum"] == 5.5
+
+            usage = assert_ok(send(process, {"jsonrpc": "2.0", "id": 22, "method": "tools/call", "params": {"name": "skill_usage_stats", "arguments": {"home": str(test_home)}}}), 22)
+            usage_data = usage["structuredContent"]
+            assert usage_data["query"]["maxAgeDays"] == 7
+            assert usage_data["query"]["top"] == 10
+            assert usage_data["query"]["sources"] == "all"
+            assert usage_data["allCallCount"] == 3
+            assert {record["skill"] for record in usage_data["records"]} == {"deep-research", "kimi-webbridge", "verify"}
+            assert all(record["sourcePath"] for record in usage_data["records"])
+
+            claude_usage = assert_ok(send(process, {"jsonrpc": "2.0", "id": 23, "method": "tools/call", "params": {"name": "skill_usage_stats", "arguments": {"home": str(test_home), "time_range": "all", "top": 0, "sources": ["claude"]}}}), 23)
+            claude_records = claude_usage["structuredContent"]["records"]
+            assert {record["source"] for record in claude_records} == {"claude"}
+            assert {record["skill"] for record in claude_records} == {"deep-research", "kimi-webbridge"}
+
+            assert_error(send(process, {"jsonrpc": "2.0", "id": 25, "method": "tools/call", "params": {"name": "stock_tech", "arguments": {"symbol": "bad"}}}), 25, -32602)
 
             search = assert_ok(send(process, {"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "bing_search", "arguments": {"query": "mcp"}}}), 20)
             assert "未配置 Bing 搜索 API 密钥" in search["content"][0]["text"]

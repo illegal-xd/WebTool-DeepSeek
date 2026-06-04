@@ -19,7 +19,22 @@
       "Bash(agent-browser screenshot *)",
       "Bash(git rm *)",
       "mcp__codegraph__codegraph_files",
-      "mcp__codegraph__codegraph_explore"
+      "mcp__codegraph__codegraph_explore",
+      "mcp__codegraph__codegraph_context",
+      "Bash(python3 *)",
+      "Bash(gh repo *)",
+      "Bash(rm -rf \"/tmp/Skills-Dock\")",
+      "Bash(git clone *)",
+      "mcp__codegraph__codegraph_status",
+      "Bash(rg *)",
+      "WebSearch",
+      "WebFetch(domain:q.stock.sohu.com)",
+      "WebFetch(domain:notice.10jqka.com.cn)",
+      "WebFetch(domain:www.gree.com)",
+      "WebFetch(domain:stockpage.10jqka.com.cn)",
+      "Skill(deep-research)",
+      "Workflow(deep-research)",
+      "WebFetch(domain:www.lixinger.com)"
     ]
   }
 }
