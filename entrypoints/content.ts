@@ -22,12 +22,6 @@ const ASSISTANT_MESSAGE_SELECTORS = [
 ];
 const ASSISTANT_MESSAGE_SELECTOR = ASSISTANT_MESSAGE_SELECTORS.join(',');
 
-interface DomToolCleanupState {
-  insideToolBlock: boolean;
-  activeNode: Text | null;
-  visiblePrefix: string;
-}
-
 interface TextRemovalRange {
   start: number;
   end: number;
@@ -39,7 +33,6 @@ let nextCallId = 0;
 let currentToolBlock: HTMLElement | null = null;
 const earlyPlaceholderNames: string[] = [];
 let currentToolDescriptors: ToolDescriptor[] = [];
-const assistantToolCleanupState = new WeakMap<Element, DomToolCleanupState>();
 const pendingToolCleanupMessages = new Set<Element>();
 let toolCleanupFrame: number | null = null;
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
@@ -118,17 +111,18 @@ export default defineContentScript({
       else document.addEventListener('DOMContentLoaded', () => r(undefined), { once: true });
     });
 
-    const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
+    const [memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig] = await Promise.all([
       safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
       safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
       safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
       safeRuntimeSendMessage<SystemPromptPreset | null>({ type: 'GET_ACTIVE_PRESET' }),
       safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
       safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
+      safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }),
     ]);
 
     currentToolDescriptors = toolDescriptors ?? [];
-    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors);
+    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors, memoryConfig ?? undefined);
     restorePersistedToolBlocks();
 
     window.addEventListener('message', async (event) => {
@@ -298,7 +292,7 @@ function syncToMainWorld(
   activePreset: SystemPromptPreset | null,
   modelType: ModelType,
   toolDescriptors: ToolDescriptor[],
-  memoryTokenBudget?: number,
+  memoryConfig?: MemoryConfig,
 ) {
   window.postMessage({
     source: 'WebTool-DeepSeek-content',
@@ -309,7 +303,8 @@ function syncToMainWorld(
     activePreset,
     modelType,
     toolDescriptors,
-    memoryTokenBudget,
+    memoryTokenBudget: memoryConfig?.tokenBudget,
+    memoryConfig,
   });
 }
 
@@ -1001,7 +996,7 @@ function scheduleToolCleanupForMessage(assistantMessage: Element) {
 }
 
 function shouldScheduleToolCleanup(assistantMessage: Element, text: string): boolean {
-  return hasPotentialToolMarkup(text) || assistantToolCleanupState.get(assistantMessage)?.insideToolBlock === true;
+  return hasPotentialToolMarkup(text);
 }
 
 function setupToolCleanupObserver() {
@@ -1078,36 +1073,11 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
   }
 
   const foundTags = cleanCompleteToolCallsAcrossTextNodes(targets);
-  if (foundTags) {
-    assistantToolCleanupState.delete(assistantMessage);
-  }
-
-  const state = assistantToolCleanupState.get(assistantMessage) ?? {
-    insideToolBlock: false,
-    activeNode: null,
-    visiblePrefix: '',
-  };
-
-  for (const node of targets) {
-    const text = node.textContent || '';
-    if (!text && !state.insideToolBlock) continue;
-
-    const cleaned = removeToolMarkupFromText(text, state, node);
-    if (cleaned.sawOpeningTag && Date.now() >= suppressToolPlaceholderUntil) {
-      renderEarlyToolPlaceholder(cleaned.sawOpeningTag, assistantMessage);
-    }
-    if (cleaned.changed) {
-      node.textContent = cleaned.text;
-    }
+  if (foundTags && Date.now() >= suppressToolPlaceholderUntil) {
+    for (const tag of foundTags) renderEarlyToolPlaceholder(tag, assistantMessage);
   }
 
   cleanupEmptyMarkdownParagraphs(assistantMessage);
-
-  if (state.insideToolBlock) {
-    assistantToolCleanupState.set(assistantMessage, state);
-  } else {
-    assistantToolCleanupState.delete(assistantMessage);
-  }
 }
 
 function cleanRenderedToolCallElements(assistantMessage: Element): Set<string> | null {
@@ -1214,81 +1184,6 @@ function mergeTextRemovalRanges(ranges: TextRemovalRange[]): TextRemovalRange[] 
   return merged;
 }
 
-function removeToolMarkupFromText(text: string, state: DomToolCleanupState, node: Text): {
-  text: string;
-  sawOpeningTag: string | null;
-  changed: boolean;
-} {
-  let changed = false;
-  const completeBlockRegex = createRecognizedToolTagRegex('complete');
-  const openTagRegex = createRecognizedToolTagRegex('open');
-  const closeTagRegex = createRecognizedToolTagRegex('close');
-
-  let remaining = text.replace(completeBlockRegex, () => {
-    changed = true;
-    return '';
-  });
-  remaining = remaining.replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, () => {
-    changed = true;
-    return '';
-  });
-
-  let output = '';
-  let cursor = 0;
-  let sawOpeningTag: string | null = null;
-
-  if (state.insideToolBlock && state.activeNode === node && state.visiblePrefix && remaining.startsWith(state.visiblePrefix)) {
-    output = state.visiblePrefix;
-    cursor = state.visiblePrefix.length;
-  } else if (state.insideToolBlock) {
-    const nextOpenMatch = remaining.match(openTagRegex);
-    const nextEndMatch = remaining.match(closeTagRegex);
-    if (nextOpenMatch && (!nextEndMatch || nextOpenMatch.index! < nextEndMatch.index!)) {
-      state.insideToolBlock = false;
-      state.activeNode = null;
-      state.visiblePrefix = '';
-    }
-  }
-
-  while (cursor < remaining.length) {
-    if (state.insideToolBlock) {
-      const endMatch = remaining.slice(cursor).match(closeTagRegex);
-      if (!endMatch || endMatch.index === undefined) {
-        cursor = remaining.length;
-        changed = true;
-        break;
-      }
-      cursor += endMatch.index + endMatch[0].length;
-      state.insideToolBlock = false;
-      state.activeNode = null;
-      state.visiblePrefix = '';
-      changed = true;
-      continue;
-    }
-
-    const openMatch = remaining.slice(cursor).match(openTagRegex);
-    if (!openMatch || openMatch.index === undefined) {
-      output += remaining.slice(cursor);
-      break;
-    }
-
-    output += remaining.slice(cursor, cursor + openMatch.index);
-    sawOpeningTag = openMatch[1];
-    cursor += openMatch.index + openMatch[0].length;
-    state.insideToolBlock = true;
-    state.activeNode = node;
-    state.visiblePrefix = output;
-    changed = true;
-  }
-
-  if (state.insideToolBlock && state.activeNode !== node) {
-    state.activeNode = node;
-    state.visiblePrefix = output;
-  }
-
-  return { text: output, sawOpeningTag, changed };
-}
-
 // ─── DOM Observer (background image patching + tool block) ────────
 
 function setupDOMObserver() {
@@ -1342,14 +1237,6 @@ function hasPotentialToolMarkup(text: string): boolean {
   return getRecognizedToolTagNames().some((tag) => text.includes(`<${tag}>`) || text.includes(`</${tag}>`)) || /<｜DSML｜tool_calls>/.test(text);
 }
 
-function createRecognizedToolTagRegex(kind: 'open' | 'close' | 'complete'): RegExp {
-  const names = getRecognizedToolTagNames().map(escapeRegExp).join('|');
-  if (!names) return /$a/g;
-  if (kind === 'open') return new RegExp(`<(${names})>`);
-  if (kind === 'close') return new RegExp(`<\\/(${names})>`);
-  return new RegExp(`<(${names})>\\s*\\{[\\s\\S]*?\\}\\s*<\\/\\1>`, 'g');
-}
-
 function getRecognizedToolTagNames(): string[] {
   const names = new Set(RECOGNIZED_TOOL_TAGS);
   for (const descriptor of currentToolDescriptors) {
@@ -1357,10 +1244,6 @@ function getRecognizedToolTagNames(): string[] {
     if (invocationName) names.add(invocationName);
   }
   return [...names];
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ─── Background Image (unchanged from original) ───────────────────
@@ -1649,8 +1532,9 @@ const BLOCK_CSS = `
 
 /* ── Body ────────────────────────────────────────────────────── */
 .dpp-tb-body {
-  max-height: 2000px;
+  max-height: 600px;
   overflow: hidden;
+  overflow-y: auto;
   transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
   opacity: 1;
 }

@@ -34,7 +34,9 @@
       "WebFetch(domain:stockpage.10jqka.com.cn)",
       "Skill(deep-research)",
       "Workflow(deep-research)",
-      "WebFetch(domain:www.lixinger.com)"
+      "WebFetch(domain:www.lixinger.com)",
+      "WebFetch(domain:static.cninfo.com.cn)",
+      "Bash(curl *)"
     ]
   }
 }

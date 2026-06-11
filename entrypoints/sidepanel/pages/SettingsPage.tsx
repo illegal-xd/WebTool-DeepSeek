@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../../../config.js';
-import type { MemoryConfig } from '../../../core/memory/config';
+import { DEFAULT_CUSTOM_MEMORY_PROMPT, type MemoryConfig } from '../../../core/memory/config';
 import { getFeatureVisibility, setFeatureVisibility, subscribeFeatureVisibility, type FeatureVisibility } from '../feature-visibility';
 import type { BackgroundConfig, McpServerConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
 import { useTheme } from '../../../hooks/useTheme';
@@ -109,6 +109,8 @@ export default function SettingsPage() {
   const [expertMode, setExpertMode] = useState(false);
   const [memoryTokenBudget, setMemoryTokenBudget] = useState(3000);
   const [singleMemoryInjection, setSingleMemoryInjection] = useState(false);
+  const [customMemoryEnabled, setCustomMemoryEnabled] = useState(false);
+  const [customMemoryPrompt, setCustomMemoryPrompt] = useState(DEFAULT_CUSTOM_MEMORY_PROMPT);
   const [featureVisibility, setFeatureVisibilityState] = useState<FeatureVisibility>(() => getFeatureVisibility());
   const [bgEnabled, setBgEnabled] = useState(false);
   const [bgType, setBgType] = useState<'upload' | 'url'>('upload');
@@ -159,6 +161,8 @@ export default function SettingsPage() {
       if (!cfg) return;
       setMemoryTokenBudget(cfg.tokenBudget);
       setSingleMemoryInjection(cfg.singleMemoryInjection === true);
+      setCustomMemoryEnabled(cfg.customMemoryEnabled === true);
+      setCustomMemoryPrompt(cfg.customMemoryPrompt?.trim() ? cfg.customMemoryPrompt : DEFAULT_CUSTOM_MEMORY_PROMPT);
     });
   }, []);
 
@@ -177,7 +181,7 @@ export default function SettingsPage() {
     setMemoryTokenBudget(clamped);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: clamped, singleMemoryInjection },
+      payload: { tokenBudget: clamped, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt },
     });
   };
 
@@ -185,7 +189,25 @@ export default function SettingsPage() {
     setSingleMemoryInjection(enabled);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled, customMemoryEnabled, customMemoryPrompt },
+    });
+  };
+
+  const handleCustomMemoryEnabledChange = async (enabled: boolean) => {
+    const nextPrompt = customMemoryPrompt.trim() ? customMemoryPrompt : DEFAULT_CUSTOM_MEMORY_PROMPT;
+    setCustomMemoryEnabled(enabled);
+    setCustomMemoryPrompt(nextPrompt);
+    await chrome.runtime.sendMessage({
+      type: 'SET_MEMORY_CONFIG',
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled: enabled, customMemoryPrompt: nextPrompt },
+    });
+  };
+
+  const handleCustomMemoryPromptChange = async (prompt: string) => {
+    setCustomMemoryPrompt(prompt);
+    await chrome.runtime.sendMessage({
+      type: 'SET_MEMORY_CONFIG',
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt: prompt },
     });
   };
 
@@ -749,74 +771,124 @@ export default function SettingsPage() {
             </button>
           </div>
 
-          <div className="border-t pt-3 flex justify-between items-center" style={{ borderColor: 'var(--ds-border)' }}>
-            <div>
-              <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
-                单一记忆注入
+          <div className="border-t pt-3 space-y-3" style={{ borderColor: 'var(--ds-border)' }}>
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                  自定义记忆能力
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                  使用自定义提示词接管记忆注入
+                </div>
               </div>
-              <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
-                同一对话中默认提示词与自动记忆只注入一次
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => handleSingleMemoryInjectionChange(!singleMemoryInjection)}
-              aria-pressed={singleMemoryInjection}
-              className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
-              style={{
-                background: singleMemoryInjection ? 'var(--ds-blue)' : 'var(--ds-border)',
-              }}
-            >
-              <span
-                className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+              <button
+                type="button"
+                onClick={() => handleCustomMemoryEnabledChange(!customMemoryEnabled)}
+                aria-pressed={customMemoryEnabled}
+                className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
                 style={{
-                  transform: singleMemoryInjection ? 'translateX(18px)' : 'translateX(0)',
+                  background: customMemoryEnabled ? 'var(--ds-blue)' : 'var(--ds-border)',
                 }}
-              />
-            </button>
+              >
+                <span
+                  className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                  style={{
+                    transform: customMemoryEnabled ? 'translateX(18px)' : 'translateX(0)',
+                  }}
+                />
+              </button>
+            </div>
+
+            {customMemoryEnabled && (
+              <div>
+                <label htmlFor="custom-memory-prompt" className="block text-[11px] mb-1" style={{ color: 'var(--ds-text-secondary)' }}>
+                  自定义记忆提示语
+                </label>
+                <textarea
+                  id="custom-memory-prompt"
+                  value={customMemoryPrompt}
+                  onChange={(e) => handleCustomMemoryPromptChange(e.target.value)}
+                  placeholder="例如：使用 delx-memory MCP 工具读取、保存和更新长期记忆。"
+                  rows={12}
+                  className={`${inputClass} resize-y leading-relaxed`}
+                  style={inputStyle}
+                />
+              </div>
+            )}
           </div>
 
-          <div className="border-t pt-3" style={{ borderColor: 'var(--ds-border)' }}>
-            <div className="flex items-center justify-between mb-1.5">
-              <label htmlFor="memory-token-budget" className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
-                注入上下文限制
-              </label>
-              <span className="text-[11px] font-mono tabular-nums" style={{ color: 'var(--ds-text-tertiary)' }}>
-                {memoryTokenBudget}
-              </span>
-            </div>
-            <div className="text-[11px] mb-2" style={{ color: 'var(--ds-text-tertiary)' }}>
-              记忆注入的最大 Token 预算（影响注入数量），范围 500 ~ 10000
-            </div>
-            <div className="flex items-center gap-3">
-              <input
-                id="memory-token-budget"
-                type="range"
-                min="500"
-                max="10000"
-                step="100"
-                value={memoryTokenBudget}
-                onChange={(e) => handleMemoryTokenBudgetChange(parseInt(e.target.value))}
-                className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
+          {!customMemoryEnabled && (
+            <div className="border-t pt-3 flex justify-between items-center" style={{ borderColor: 'var(--ds-border)' }}>
+              <div>
+                <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                  单一记忆注入
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                  同一对话中默认提示词与自动记忆只注入一次
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleSingleMemoryInjectionChange(!singleMemoryInjection)}
+                aria-pressed={singleMemoryInjection}
+                className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
                 style={{
-                  background: `linear-gradient(to right, var(--ds-blue) ${((memoryTokenBudget - 500) / 9500) * 100}%, var(--ds-border) ${((memoryTokenBudget - 500) / 9500) * 100}%)`,
+                  background: singleMemoryInjection ? 'var(--ds-blue)' : 'var(--ds-border)',
                 }}
-              />
-              <input
-                type="number"
-                min="500"
-                max="10000"
-                step="100"
-                value={memoryTokenBudget}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value);
-                  if (!isNaN(v)) handleMemoryTokenBudgetChange(v);
-                }}
-                className="w-20 px-2 py-1.5 text-xs rounded-lg border text-center tabular-nums outline-none transition-colors focus:border-[var(--ds-blue)]"
-                style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
-              />
+              >
+                <span
+                  className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                  style={{
+                    transform: singleMemoryInjection ? 'translateX(18px)' : 'translateX(0)',
+                  }}
+                />
+              </button>
             </div>
-          </div>
+          )}
+
+          {!customMemoryEnabled && (
+            <div className="border-t pt-3" style={{ borderColor: 'var(--ds-border)' }}>
+              <div className="flex items-center justify-between mb-1.5">
+                <label htmlFor="memory-token-budget" className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                  注入上下文限制
+                </label>
+                <span className="text-[11px] font-mono tabular-nums" style={{ color: 'var(--ds-text-tertiary)' }}>
+                  {memoryTokenBudget}
+                </span>
+              </div>
+              <div className="text-[11px] mb-2" style={{ color: 'var(--ds-text-tertiary)' }}>
+                记忆注入的最大 Token 预算（影响注入数量），范围 500 ~ 10000
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  id="memory-token-budget"
+                  type="range"
+                  min="500"
+                  max="10000"
+                  step="100"
+                  value={memoryTokenBudget}
+                  onChange={(e) => handleMemoryTokenBudgetChange(parseInt(e.target.value))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
+                  style={{
+                    background: `linear-gradient(to right, var(--ds-blue) ${((memoryTokenBudget - 500) / 9500) * 100}%, var(--ds-border) ${((memoryTokenBudget - 500) / 9500) * 100}%)`,
+                  }}
+                />
+                <input
+                  type="number"
+                  min="500"
+                  max="10000"
+                  step="100"
+                  value={memoryTokenBudget}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value);
+                    if (!isNaN(v)) handleMemoryTokenBudgetChange(v);
+                  }}
+                  className="w-20 px-2 py-1.5 text-xs rounded-lg border text-center tabular-nums outline-none transition-colors focus:border-[var(--ds-blue)]"
+                  style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
+                />
+              </div>
+            </div>
+          )}
         </div>
       </section>
 

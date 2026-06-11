@@ -5,8 +5,12 @@ import argparse
 import json
 import os
 import platform
+import shlex
 import re
+import shutil
+import sqlite3
 import sys
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,46 +19,136 @@ from typing import Any
 # 每条调用记录保存时间戳、来源类型和记录文件路径。
 Invocation = tuple[str, str, str]
 InvocationMap = dict[str, list[Invocation]]
+FileSignature = tuple[int, int, int]
+TextCacheKey = tuple[str, str, str]
+JsonlMatchCacheKey = tuple[str, tuple[str, ...], FileSignature]
+SqliteCacheKey = tuple[str, FileSignature]
+
+_TEXT_CACHE: dict[TextCacheKey, tuple[FileSignature, str]] = {}
+_JSONL_MATCH_CACHE: dict[JsonlMatchCacheKey, list[dict[str, Any]]] = {}
+_SQLITE_SKILL_CACHE: dict[SqliteCacheKey, list[tuple[str, str]]] = {}
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
+_SKILL_MD_PATH_RE = re.compile(r"^(?:[A-Za-z]:)?(?:~|\.\.?|/)[^\s\"'`]+/SKILL\.md$", re.IGNORECASE)
+_ASPIRECODE_SKILL_START_RE = re.compile(r"\[data-monitor-skill\]\s+Started recording skill:\s*([^\s,;)]+)")
+_ASPIRECODE_SKILL_LOADING_RE = re.compile(r"\bloading\s+([^\s,;)]+)\s+skill\b", re.IGNORECASE)
+_ASPIRECODE_SKILL_NAME_RE = re.compile(r'\b(?:skillName|skill_name)\b\s*[:=]\s*"?([^\s,;)"\']+)')
+_UNKNOWN_SKILL_NAME = "unknown-skill"
+_TRAILING_NAME_PUNCTUATION = ".,;)]}"
+_CLAUDE_ENTRY_MARKERS = (
+    "Launching skill: ",
+    '"tool_name":"skill"',
+    '"tool_name": "skill"',
+    '"name":"skill"',
+    '"name": "skill"',
+    '"toolUseResult"',
+    '"commandName"',
+    '"tool_use_id"',
+)
+
+
+def clear_scan_cache() -> None:
+    _TEXT_CACHE.clear()
+    _JSONL_MATCH_CACHE.clear()
+    _SQLITE_SKILL_CACHE.clear()
+
+
+def file_signature(path: Path) -> FileSignature:
+    stat = path.stat()
+    return (
+        int(getattr(stat, "st_ino", 0) or 0),
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+    )
+
+
+def read_text_cached(path: Path, encoding: str = "utf-8", errors: str | None = None) -> str:
+    signature = file_signature(path)
+    key = (str(path), encoding, errors or "")
+    cached = _TEXT_CACHE.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
+    if errors is None:
+        text = path.read_text(encoding=encoding)
+    else:
+        text = path.read_text(encoding=encoding, errors=errors)
+    _TEXT_CACHE[key] = (signature, text)
+    return text
 
 
 # 收集不同客户端在各平台上的会话或日志目录。
 def usage_roots(home: Path) -> dict[str, list[Path]]:
     roots = {
-        "claude": [home / ".claude" / "projects"],
-        "codex": [home / ".codex" / "sessions"],
+        "claude": [
+            home / ".claude" / "projects",
+            home / ".claude" / "transcripts",
+        ],
+        "codex": [
+            home / ".codex" / "sessions",
+            home / ".codex" / "archived_sessions",
+        ],
         "gemini": [home / ".gemini" / "tmp"],
         "opencode": [],
         "aspirecode_desktop_logs": [home / "Library" / "Logs" / "ai.aspirecode.desktop"],
+        "aspirecode_timing_events": [home / ".config" / "opencode" / "aspirecode" / "timings"],
     }
 
     system = platform.system().lower()
     if system == "darwin":
-        roots["opencode"] = [
+        roots["opencode"] = opencode_storage_paths([
+            home / ".local" / "share" / "opencode" / "storage",
             home / "Library" / "Application Support" / "opencode" / "storage" / "message",
-            home / ".opencode" / "storage" / "message",
-        ]
+            home / "Library" / "Application Support" / "opencode" / "storage",
+            home / "Library" / "Application Support" / "ai.opencode.desktop" / "opencode" / "storage",
+            home / ".opencode" / "storage",
+        ])
+        roots["opencode"].extend([
+            home / ".local" / "share" / "opencode" / "opencode.db",
+            home / ".local" / "share" / "opencode" / "opencode-prod.db",
+            home / ".config" / "opencode" / "context-mode" / "sessions",
+        ])
     elif system == "windows":
         app_data = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
         local_app_data = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
-        roots["opencode"] = [
-            app_data / "opencode" / "storage" / "message",
-            app_data / "OpenCode" / "storage" / "message",
-            local_app_data / "opencode" / "storage" / "message",
-            local_app_data / "OpenCode" / "storage" / "message",
-            home / ".opencode" / "storage" / "message",
-        ]
+        roots["opencode"] = opencode_storage_paths([
+            app_data / "opencode" / "storage",
+            app_data / "OpenCode" / "storage",
+            local_app_data / "opencode" / "storage",
+            local_app_data / "OpenCode" / "storage",
+            home / ".opencode" / "storage",
+        ])
+        roots["opencode"].extend([
+            app_data / "opencode" / "opencode.db",
+            app_data / "opencode" / "opencode-prod.db",
+            home / ".config" / "opencode" / "context-mode" / "sessions",
+        ])
     else:
         data_home = Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share")
         state_home = Path(os.environ.get("XDG_STATE_HOME") or home / ".local" / "state")
         config_home = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
-        roots["opencode"] = [
-            data_home / "opencode" / "storage" / "message",
-            state_home / "opencode" / "storage" / "message",
-            config_home / "opencode" / "storage" / "message",
-            home / ".opencode" / "storage" / "message",
-        ]
+        roots["opencode"] = opencode_storage_paths([
+            data_home / "opencode" / "storage",
+            state_home / "opencode" / "storage",
+            config_home / "opencode" / "storage",
+            home / ".opencode" / "storage",
+        ])
+        roots["opencode"].extend([
+            data_home / "opencode" / "opencode.db",
+            data_home / "opencode" / "opencode-prod.db",
+            config_home / "opencode" / "context-mode" / "sessions",
+        ])
 
     return {name: unique_paths(paths) for name, paths in roots.items()}
+
+
+def opencode_storage_paths(storage_roots: list[Path]) -> list[Path]:
+    paths: list[Path] = []
+    for root in storage_roots:
+        if root.name in {"message", "part"}:
+            paths.append(root)
+            continue
+        paths.extend((root / "message", root / "part"))
+    return paths
 
 
 def unique_paths(paths: list[Path]) -> list[Path]:
@@ -105,6 +199,9 @@ def scan_skill_usage(
         for path in roots["aspirecode_desktop_logs"]:
             if path.exists():
                 scan_aspirecode_desktop_logs(path, invocations, "aspirecode", cutoff)
+        for path in roots["aspirecode_timing_events"]:
+            if path.exists():
+                scan_aspirecode_timing_events(path, invocations, "aspirecode", cutoff)
 
     return summarize_invocations(invocations, max_age_days, top_count, trigger_filter, include_records)
 
@@ -120,6 +217,7 @@ def summarize_invocations(
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days) if max_age_days is not None else None
     summaries: list[tuple[str, int, list[str]]] = []
     records_by_skill: dict[str, list[Invocation]] = {}
+    total_call_count = 0
 
     for name, records in invocations.items():
         filtered_records = [
@@ -129,7 +227,9 @@ def summarize_invocations(
         ]
         if filtered_records:
             triggers = sorted({record[1] for record in filtered_records})
-            summaries.append((name, len(filtered_records), triggers))
+            call_count = len(filtered_records)
+            total_call_count += call_count
+            summaries.append((name, call_count, triggers))
             records_by_skill[name] = filtered_records
 
     if top_count is None:
@@ -142,7 +242,7 @@ def summarize_invocations(
             {name: {"callCount": call_count, "trigger": triggers}}
             for name, call_count, triggers in summaries
         ],
-        "allCallCount": sum(call_count for _, call_count, _ in summaries),
+        "allCallCount": total_call_count,
     }
     if include_records:
         selected_names = {name for name, _, _ in summaries}
@@ -211,46 +311,63 @@ def parse_timestamp(value: str) -> datetime | None:
 
 # Claude Code 会话是 JSONL，技能调用记录在 user/tool_result 内容中。
 def scan_claude_projects(root: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
-    for path in safe_iterdir(root):
-        if path.is_dir():
-            for child in safe_iterdir(path):
-                if child.suffix == ".jsonl":
-                    parse_claude_jsonl(child, invocations, trigger, cutoff)
-        elif path.suffix == ".jsonl":
-            parse_claude_jsonl(path, invocations, trigger, cutoff)
+    for path in safe_rglob(root, "*.jsonl"):
+        parse_claude_jsonl(path, invocations, trigger, cutoff)
 
 
 def parse_claude_jsonl(path: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
     if not path_may_contain_recent_records(path, cutoff):
         return
 
-    for entry in iter_jsonl_matching(path, ("Launching skill: ",)):
-        if entry.get("type") != "user":
-            continue
+    for entry in read_jsonl(path):
         timestamp = string_or_empty(entry.get("timestamp"))
         if cutoff is not None and not timestamp_in_range(timestamp, cutoff):
             continue
-        content = entry.get("message", {}).get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
-            for skill_name in extract_claude_skill_names(block):
-                invocations[skill_name].append((timestamp, trigger, str(path)))
+        for skill_name in extract_claude_entry_skill_names(entry):
+            invocations[skill_name].append((timestamp, trigger, str(path)))
 
 
-def extract_claude_skill_names(block: dict[str, Any]) -> list[str]:
-    content = block.get("content")
-    if isinstance(content, str):
-        return parse_launching_skill_names(content)
-    if isinstance(content, list):
-        names: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                names.extend(parse_launching_skill_names(item["text"]))
-        return names
-    return []
+def extract_claude_entry_skill_names(entry: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+
+    tool_use_result = entry.get("toolUseResult")
+    if isinstance(tool_use_result, dict):
+        for key in ("commandName", "command_name", "skillName", "skill_name"):
+            if key in tool_use_result:
+                skill_name = normalize_skill_identifier(string_or_empty(tool_use_result.get(key)))
+                if skill_name:
+                    names.append(skill_name)
+                break
+
+    if entry.get("type") == "tool_use":
+        skill_name = extract_claude_tool_use_skill_name(entry)
+        if skill_name:
+            names.append(skill_name)
+
+    message = entry.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    skill_name = extract_claude_tool_use_skill_name(block)
+                    if skill_name:
+                        names.append(skill_name)
+    return unique_names(names)
+
+
+def extract_claude_tool_use_skill_name(block: dict[str, Any]) -> str | None:
+    tool_name = block.get("tool_name") or block.get("name")
+    if tool_name != "skill":
+        return None
+    for key in ("tool_input", "input", "args", "arguments"):
+        if key in block:
+            skill_name = extract_skill_name_from_argument_value(block[key], allow_bare_name=True)
+            if skill_name:
+                return skill_name
+    return None
 
 
 # Codex 记录里通过 exec_command 调用 SKILL.md，因此按命令路径提取技能名。
@@ -263,7 +380,6 @@ def parse_codex_jsonl(path: Path, invocations: InvocationMap, trigger: str, cuto
     if not path_may_contain_recent_records(path, cutoff):
         return
 
-    seen: dict[str, str] = {}
     for entry in iter_jsonl_matching(path, ("exec_command", "/SKILL.md")):
         if entry.get("type") != "response_item":
             continue
@@ -287,12 +403,8 @@ def parse_codex_jsonl(path: Path, invocations: InvocationMap, trigger: str, cuto
         timestamp = string_or_empty(entry.get("timestamp"))
         if cutoff is not None and not timestamp_in_range(timestamp, cutoff):
             continue
-        skill_name = extract_skill_name_from_cmd(cmd)
-        if skill_name and skill_name not in seen:
-            seen[skill_name] = timestamp
-
-    for skill_name, timestamp in seen.items():
-        invocations[skill_name].append((timestamp, trigger, str(path)))
+        for skill_name in extract_skill_names_from_skill_md_paths(cmd):
+            invocations[skill_name].append((timestamp, trigger, str(path)))
 
 
 def scan_gemini_sessions(root: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
@@ -300,13 +412,166 @@ def scan_gemini_sessions(root: Path, invocations: InvocationMap, trigger: str, c
 
 
 def scan_opencode_messages(root: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
+    if root.is_file():
+        if root.suffix == ".json":
+            parse_generic_json_file(root, invocations, trigger, cutoff)
+        elif root.suffix in {".db", ".sqlite", ".sqlite3"}:
+            parse_opencode_sqlite_database(root, invocations, trigger, cutoff)
+        return
+
     scan_json_files_recursive(root, invocations, trigger, cutoff)
+    scan_opencode_sqlite_databases(root, invocations, trigger, cutoff)
+
+
+def scan_opencode_sqlite_databases(root: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
+    if root.is_file():
+        if root.suffix in {".db", ".sqlite", ".sqlite3"}:
+            parse_opencode_sqlite_database(root, invocations, trigger, cutoff)
+        return
+
+    candidates = unique_paths(
+        safe_rglob(root, "*.db")
+        + safe_rglob(root, "*.sqlite")
+        + safe_rglob(root, "*.sqlite3")
+    )
+    for path in candidates:
+        parse_opencode_sqlite_database(path, invocations, trigger, cutoff)
+
+
+def parse_opencode_sqlite_database(path: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
+    if not path_may_contain_recent_records(path, cutoff):
+        return
+
+    try:
+        signature = file_signature(path)
+    except OSError:
+        return
+
+    cache_key = (str(path), signature)
+    cached = _SQLITE_SKILL_CACHE.get(cache_key)
+    if cached is not None:
+        for skill_name, timestamp in cached:
+            if cutoff is None or timestamp_in_range(timestamp, cutoff):
+                invocations[skill_name].append((timestamp, trigger, str(path)))
+        return
+
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            cursor = connection.cursor()
+            tables = {
+                row[0]
+                for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                if isinstance(row[0], str)
+            }
+            if "part" not in tables:
+                _SQLITE_SKILL_CACHE[cache_key] = []
+                return
+
+            rows = cursor.execute(
+                """
+                SELECT time_created, data
+                FROM part
+                WHERE COALESCE(data, '') LIKE '%"tool":"skill"%'
+                   OR COALESCE(data, '') LIKE '%"tool": "skill"%'
+                   OR COALESCE(data, '') LIKE '%"tool_name":"skill"%'
+                   OR COALESCE(data, '') LIKE '%"tool_name": "skill"%'
+                   OR COALESCE(data, '') LIKE '%"name":"skill"%'
+                   OR COALESCE(data, '') LIKE '%"name": "skill"%'
+                ORDER BY time_created ASC
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return
+
+    records: list[tuple[str, str]] = []
+    for row in rows:
+        raw_data = row[1]
+        if not isinstance(raw_data, str) or not raw_data.strip():
+            continue
+        try:
+            payload = json.loads(raw_data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        skill_name = extract_tool_call_skill(payload)
+        if not skill_name:
+            continue
+        timestamp = timestamp_from_unix_millis(row[0])
+        records.append((skill_name, timestamp))
+
+    _SQLITE_SKILL_CACHE[cache_key] = records
+    for skill_name, timestamp in records:
+        if cutoff is None or timestamp_in_range(timestamp, cutoff):
+            invocations[skill_name].append((timestamp, trigger, str(path)))
 
 
 # AspireCode 桌面日志是文本日志，需要从日志行里匹配技能名。
 def scan_aspirecode_desktop_logs(root: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
-    for path in safe_glob(root, "opencode-desktop_*.log"):
+    paths = unique_paths(safe_rglob(root, "*.log"))
+    for path in paths:
         parse_aspirecode_desktop_log(path, invocations, trigger, cutoff)
+
+
+def scan_aspirecode_timing_events(root: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
+    paths = unique_paths(safe_rglob(root, "*.jsonl"))
+    for path in paths:
+        parse_aspirecode_timing_jsonl(path, invocations, trigger, cutoff)
+
+
+def parse_aspirecode_timing_jsonl(path: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
+    if not path_may_contain_recent_records(path, cutoff):
+        return
+
+    try:
+        lines = read_text_cached(path, encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("stage") != "skill.execute":
+            continue
+        skill_name = extract_aspirecode_timing_skill_name(record)
+        if not skill_name:
+            continue
+        timestamp = extract_aspirecode_timing_timestamp(record)
+        if cutoff is not None and not timestamp_in_range(timestamp, cutoff):
+            continue
+        invocations[skill_name].append((timestamp, trigger, str(path)))
+
+
+def extract_aspirecode_timing_skill_name(record: dict[str, Any]) -> str | None:
+    meta = record.get("meta")
+    if isinstance(meta, dict):
+        skill_name = normalize_skill_identifier(string_or_empty(meta.get("skill_name")))
+        if skill_name:
+            return skill_name
+    skill_name = normalize_skill_identifier(string_or_empty(record.get("skill_name")))
+    if skill_name:
+        return skill_name
+    title = record.get("title")
+    if isinstance(title, str):
+        match = re.search(r"Loaded skill:\s*([^\s,;]+)", title)
+        if match:
+            return normalize_skill_identifier(match.group(1))
+    return None
+
+
+def extract_aspirecode_timing_timestamp(record: dict[str, Any]) -> str:
+    for key in ("start", "end", "timestamp"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def parse_aspirecode_desktop_log(path: Path, invocations: InvocationMap, trigger: str, cutoff: datetime | None) -> None:
@@ -314,9 +579,12 @@ def parse_aspirecode_desktop_log(path: Path, invocations: InvocationMap, trigger
         return
 
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = read_text_cached(path, encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return
+
+    specific_records: list[tuple[str, str]] = []
+    fallback_records: list[tuple[str, str]] = []
 
     for line in lines:
         if not line_may_contain_skill(line):
@@ -325,8 +593,15 @@ def parse_aspirecode_desktop_log(path: Path, invocations: InvocationMap, trigger
         if cutoff is not None and not timestamp_in_range(timestamp, cutoff):
             continue
         skill_names = extract_aspirecode_log_skill_names(line)
+        if not skill_names:
+            continue
+        records = specific_records if is_aspirecode_definitive_skill_line(line) else fallback_records
         for skill_name in skill_names:
-            invocations[skill_name].append((timestamp, trigger, str(path)))
+            records.append((skill_name, timestamp))
+
+    selected_records = specific_records if specific_records else fallback_records
+    for skill_name, timestamp in selected_records:
+        invocations[skill_name].append((timestamp, trigger, str(path)))
 
 
 def extract_aspirecode_log_skill_names(line: str) -> list[str]:
@@ -334,38 +609,77 @@ def extract_aspirecode_log_skill_names(line: str) -> list[str]:
         return []
 
     names = parse_launching_skill_names(line)
+    names.extend(extract_aspirecode_skill_event_names(line))
     names.extend(extract_skill_names_from_skill_md_paths(line))
 
-    service_match = re.search(r"\bservice=skill\b.*?\bname=([^\s]+)", line)
-    if service_match:
-        skill_name = normalize_skill_identifier(service_match.group(1))
-        if skill_name:
-            names.append(skill_name)
+    return unique_names(names)
 
-    if "Registered agent:" not in line:
-        entry_match = re.search(r"\bentry_skill=([^\s)]+)", line)
-        if entry_match and entry_match.group(1) != "undefined":
-            skill_name = normalize_skill_identifier(entry_match.group(1))
+
+def extract_aspirecode_skill_event_names(line: str) -> list[str]:
+    names: list[str] = []
+
+    for pattern in (_ASPIRECODE_SKILL_START_RE, _ASPIRECODE_SKILL_LOADING_RE, _ASPIRECODE_SKILL_NAME_RE):
+        for match in pattern.finditer(line):
+            skill_name = normalize_skill_identifier(match.group(1))
             if skill_name:
                 names.append(skill_name)
 
     return unique_names(names)
 
 
+def is_aspirecode_definitive_skill_line(line: str) -> bool:
+    return (
+        any(marker in line for marker in (
+            "[data-monitor-skill] Started recording skill:",
+            "Skill start recorded",
+            "skill.execute",
+        ))
+        or bool(_ASPIRECODE_SKILL_LOADING_RE.search(line))
+    )
+
+
 def is_aspirecode_log_noise(line: str) -> bool:
     return any(marker in line for marker in (
+        "[startup]",
+        "desktop.commands.directory.loaded",
+        "directory.loaded",
+        '"skills":[',
+        '\\"skills\\":[',
+        "skill_count",
+        "permissionPattern",
         "duplicate skill name",
         "Registered agent:",
         "Injected build agent skill allowlist",
         "Injected plan agent skill allowlist",
         "Loaded custom prompt from:",
         "failed to load plugin",
+        "Failed to start skill recording",
+        "Failed to record skill",
+        "requestBodyValues",
+        "service=llm",
     ))
 
 
 def extract_log_line_timestamp(line: str) -> str:
     match = re.match(r"^(\d{4}-\d{2}-\d{2}T\S+)", line)
     return match.group(1) if match else ""
+
+
+def timestamp_from_unix_millis(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        seconds = float(value) / 1000.0
+    elif isinstance(value, str):
+        try:
+            seconds = float(value) / 1000.0
+        except ValueError:
+            return ""
+    else:
+        return ""
+
+    try:
+        return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        return ""
 
 
 # Gemini/OpenCode 记录是 JSON，递归查找对象或文本里的技能调用。
@@ -395,7 +709,7 @@ def parse_generic_json_file(path: Path, invocations: InvocationMap, trigger: str
         return
 
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = read_text_cached(path, encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return
     if not text_may_contain_skill(raw):
@@ -420,6 +734,7 @@ def collect_skill_invocations_from_value(
     value: Any,
     inherited_timestamp: str | None,
     results: list[tuple[str, str | None]],
+    parent_key: str | None = None,
 ) -> None:
     if isinstance(value, dict):
         current_timestamp = extract_timestamp(value) or inherited_timestamp
@@ -427,18 +742,14 @@ def collect_skill_invocations_from_value(
         if skill_name:
             results.append((skill_name, current_timestamp))
             return
-        for child in value.values():
-            collect_skill_invocations_from_value(child, current_timestamp, results)
+        for key, child in value.items():
+            collect_skill_invocations_from_value(child, current_timestamp, results, str(key))
         return
 
     if isinstance(value, list):
         for item in value:
-            collect_skill_invocations_from_value(item, inherited_timestamp, results)
+            collect_skill_invocations_from_value(item, inherited_timestamp, results, parent_key)
         return
-
-    if isinstance(value, str):
-        for skill_name in parse_skill_names_from_text(value):
-            results.append((skill_name, inherited_timestamp))
 
 
 def extract_skill_invocation_from_object(value: dict[str, Any]) -> str | None:
@@ -452,7 +763,7 @@ def extract_skill_invocation_from_object(value: dict[str, Any]) -> str | None:
 
 
 def extract_tool_call_skill(value: dict[str, Any]) -> str | None:
-    tool_name = value.get("name") or value.get("toolName") or value.get("tool_name")
+    tool_name = value.get("name") or value.get("toolName") or value.get("tool_name") or value.get("tool")
     if tool_name not in {"activate_skill", "skill"}:
         return None
 
@@ -461,36 +772,79 @@ def extract_tool_call_skill(value: dict[str, Any]) -> str | None:
             skill_name = extract_skill_name_from_argument_value(value[key])
             if skill_name:
                 return skill_name
+
+    state = value.get("state")
+    if isinstance(state, dict):
+        for key in ("args", "arguments", "input", "parameters", "payload"):
+            if key in state:
+                skill_name = extract_skill_name_from_argument_value(state[key])
+                if skill_name:
+                    return skill_name
     return None
 
 
-def extract_skill_name_from_argument_value(value: Any) -> str | None:
+def extract_skill_name_from_argument_value(value: Any, allow_bare_name: bool = False) -> str | None:
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            return normalize_skill_identifier(value)
-        return extract_skill_name_from_argument_value(parsed)
-
-    if isinstance(value, dict):
-        for key in ("skillName", "skill_name", "identifier", "name", "path", "id"):
-            if key in value:
-                skill_name = extract_skill_name_from_argument_value(value[key])
-                if skill_name:
-                    return skill_name
-        for child in value.values():
-            skill_name = extract_skill_name_from_argument_value(child)
+            skill_name = extract_slash_command_skill_name(value)
             if skill_name:
                 return skill_name
+            skill_names = extract_skill_names_from_skill_md_paths(value)
+            if skill_names:
+                return skill_names[0]
+            if allow_bare_name:
+                return normalize_skill_identifier(value)
+            return None
+        return extract_skill_name_from_argument_value(parsed, allow_bare_name=allow_bare_name)
+
+    if isinstance(value, dict):
+        for key in ("skillName", "skill_name", "identifier", "name", "path", "id", "commandName", "command_name"):
+            if key in value:
+                child_allow_bare_name = key in {"skillName", "skill_name", "identifier", "name", "id", "commandName", "command_name"}
+                skill_name = extract_skill_name_from_argument_value(value[key], allow_bare_name=child_allow_bare_name)
+                if skill_name:
+                    return skill_name
+        for key in ("cmd",):
+            if key in value:
+                skill_name = extract_skill_name_from_argument_value(value[key], allow_bare_name=False)
+                if skill_name:
+                    return skill_name
+        for key in ("tool_input", "input", "args", "arguments", "parameters", "payload", "state"):
+            if key in value:
+                skill_name = extract_skill_name_from_argument_value(value[key], allow_bare_name=False)
+                if skill_name:
+                    return skill_name
         return None
 
     if isinstance(value, list):
         for item in value:
-            skill_name = extract_skill_name_from_argument_value(item)
+            skill_name = extract_skill_name_from_argument_value(item, allow_bare_name=allow_bare_name)
             if skill_name:
                 return skill_name
 
     return None
+
+
+def extract_slash_command_skill_name(text: str) -> str | None:
+    trimmed = text.strip()
+    if not trimmed.startswith("/"):
+        return None
+
+    match = re.match(r"^/([a-z0-9._:-]+)(?:\s+(.*))?$", trimmed)
+    if not match:
+        return None
+
+    raw_name = match.group(1)
+    remainder = match.group(2) or ""
+    if raw_name.lower() in {"skill", "skills"}:
+        if not remainder:
+            return None
+        first_token = remainder.split(None, 1)[0]
+        return normalize_skill_identifier(first_token)
+
+    return normalize_skill_identifier(raw_name)
 
 
 def parse_launching_skill_names(text: str) -> list[str]:
@@ -508,17 +862,48 @@ def parse_launching_skill_names(text: str) -> list[str]:
 
 def parse_skill_names_from_text(text: str) -> list[str]:
     names = parse_launching_skill_names(text)
-    if names:
-        return names
-    return extract_skill_names_from_skill_md_paths(text)
+    names.extend(parse_slash_skill_names(text))
+    return unique_names(names)
+
+
+def parse_textual_skill_invocation_names(text: str) -> list[str]:
+    names = parse_launching_skill_names(text)
+    names.extend(parse_slash_skill_names(text))
+    return unique_names(names)
+
+
+def parse_slash_skill_names(text: str) -> list[str]:
+    names: list[str] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*/(\S+)(?:\s+(\S+))?", line)
+        if not match:
+            continue
+        raw_name = match.group(1)
+        if raw_name.lower() in {"skill", "skills"} and match.group(2):
+            raw_name = match.group(2)
+        skill_name = normalize_skill_identifier(raw_name)
+        if skill_name:
+            names.append(skill_name)
+    return unique_names(names)
 
 
 def extract_skill_names_from_skill_md_paths(text: str) -> list[str]:
     normalized = text.replace("\\", "/")
     names: list[str] = []
-    for match in re.finditer(r"([^\s\"']+)/SKILL\.md", normalized):
-        candidate = match.group(1).rsplit("/", 1)[-1]
-        skill_name = normalize_skill_identifier(candidate)
+    try:
+        tokens = shlex.split(normalized)
+    except ValueError:
+        tokens = normalized.split()
+
+    for token in tokens:
+        candidate = token.strip().strip('"').strip("'").strip("`").strip()
+        candidate = candidate.strip(".,;:])}>")
+        if not candidate or any(char in candidate for char in "()[]{}<>"):
+            continue
+        if not _SKILL_MD_PATH_RE.fullmatch(candidate):
+            continue
+        skill_name = candidate.rsplit("/", 1)[-2]
+        skill_name = normalize_skill_identifier(skill_name)
         if skill_name:
             names.append(skill_name)
     return unique_names(names)
@@ -535,7 +920,7 @@ def unique_names(names: list[str]) -> list[str]:
 
 
 def normalize_skill_identifier(raw: str) -> str | None:
-    trimmed = raw.strip().strip('"').strip("'")
+    trimmed = raw.strip().strip('"').strip("'").strip("`").strip()
     if not trimmed:
         return None
 
@@ -544,24 +929,18 @@ def normalize_skill_identifier(raw: str) -> str | None:
         return skill_name
 
     normalized = trimmed.replace("\\", "/")
-    candidate = normalized.rsplit("/", 1)[-1]
+    candidate = normalized.rsplit("/", 1)[-1].strip().strip('"').strip("'").strip("`")
+    candidate = candidate.rstrip(_TRAILING_NAME_PUNCTUATION).lower()
     if not candidate or candidate.startswith("."):
         return None
-    if all(ch.isascii() and (ch.isalnum() or ch in "-_.") for ch in candidate):
+    if _SKILL_NAME_RE.fullmatch(candidate):
         return candidate.lower()
     return None
 
 
 def extract_skill_name_from_cmd(cmd: str) -> str | None:
-    normalized = cmd.replace("\\", "/")
-    index = normalized.find("/SKILL.md")
-    if index == -1:
-        return None
-    before = normalized[:index]
-    name = before.rsplit("/", 1)[-1]
-    if not name or name.startswith("."):
-        return None
-    return name.lower()
+    names = extract_skill_names_from_skill_md_paths(cmd)
+    return names[0] if names else None
 
 
 def extract_timestamp(value: dict[str, Any]) -> str | None:
@@ -582,7 +961,17 @@ def file_timestamp(path: Path) -> str | None:
 
 def iter_jsonl_matching(path: Path, markers: tuple[str, ...]) -> list[dict[str, Any]]:
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        signature = file_signature(path)
+    except OSError:
+        return []
+
+    cache_key = (str(path), markers, signature)
+    cached = _JSONL_MATCH_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
+    try:
+        lines = read_text_cached(path, encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
 
@@ -596,22 +985,25 @@ def iter_jsonl_matching(path: Path, markers: tuple[str, ...]) -> list[dict[str, 
             continue
         if isinstance(value, dict):
             entries.append(value)
+    _JSONL_MATCH_CACHE[cache_key] = entries
     return entries
 
 
 def line_may_contain_skill(line: str) -> bool:
-    return any(marker in line for marker in (
-        "Launching skill: ",
-        "/SKILL.md",
-        "service=skill",
-        "entry_skill=",
-    ))
+    return (
+        any(marker in line for marker in (
+            "Launching skill: ",
+            "[data-monitor-skill]",
+            "Skill start recorded",
+            "skill.execute",
+        ))
+        or bool(re.search(r"\bloading\s+[^\s,;)]+\s+skill\b", line, re.IGNORECASE))
+    )
 
 
 def text_may_contain_skill(text: str) -> bool:
     return any(marker in text for marker in (
         "Launching skill: ",
-        "/SKILL.md",
         "activate_skill",
         '"skill"',
         "functionCall",
@@ -623,7 +1015,7 @@ def text_may_contain_skill(text: str) -> bool:
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = read_text_cached(path, encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         return []
 
@@ -733,7 +1125,7 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-# 命令行参数：默认最近 7 天、默认来源 aspirecode，-top 可选数量。
+# 命令行参数：默认最近 7 天、默认所有来源，-top 可选数量。
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Scan local Claude/Codex/Gemini/OpenCode session records and count skill invocations.",
@@ -741,7 +1133,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--home", type=Path, help="User home directory to scan. Defaults to the current user's home.")
     parser.add_argument("--compact", action="store_true", help="Print minified raw JSON data instead of the terminal-friendly percentage bar chart.")
     parser.add_argument("-top", "--top", nargs="?", const=5, type=positive_int, help="Only show the top skills by call count. Defaults to 5 when no count is provided.")
-    parser.add_argument("-type", "--type", default="aspirecode", help="Only count comma-separated trigger sources. Use all for every source. Defaults to aspirecode.")
+    parser.add_argument("-type", "--type", default="all", help="Only count comma-separated trigger sources. Use all for every source. Defaults to all.")
     parser.add_argument("-time", "--time", choices=("week", "month", "all"), default="week", help="Time range to count: week, month, or all. Defaults to week.")
     return parser.parse_args(argv)
 

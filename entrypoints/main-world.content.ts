@@ -7,6 +7,9 @@ import { updatePresetTag } from '../core/ui/preset-tag';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS } from '../core/tool';
 import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
+let latestMemories: Memory[] = [];
+let latestMemoryConfig: MemoryConfig | null = null;
+
 export default defineContentScript({
   matches: ['*://chat.deepseek.com/*'],
   world: 'MAIN',
@@ -85,7 +88,7 @@ export default defineContentScript({
 
       switch (event.data.type) {
         case 'SYNC_STATE': {
-          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget } = event.data as {
+          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget, memoryConfig } = event.data as {
             memories: Memory[];
             skills: Skill[];
             presets: SystemPromptPreset[];
@@ -94,7 +97,11 @@ export default defineContentScript({
             toolDescriptors?: ToolDescriptor[];
             recognizedToolTags?: string[];
             memoryTokenBudget?: number;
+            memoryConfig?: MemoryConfig;
           };
+          latestMemories = memories;
+          if (memoryConfig) latestMemoryConfig = memoryConfig;
+          const activeMemoryConfig = memoryConfig ?? latestMemoryConfig;
           updateHookState({
             memories,
             skills,
@@ -102,11 +109,18 @@ export default defineContentScript({
             modelType,
             toolDescriptors: toolDescriptors ?? [],
             recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS],
-            ...(memoryTokenBudget !== undefined ? { memoryTokenBudget } : {}),
+            ...(activeMemoryConfig
+              ? {
+                  memoryTokenBudget: activeMemoryConfig.tokenBudget,
+                  singleMemoryInjection: activeMemoryConfig.singleMemoryInjection === true,
+                  customMemoryEnabled: activeMemoryConfig.customMemoryEnabled === true,
+                  customMemoryPrompt: activeMemoryConfig.customMemoryPrompt,
+                }
+              : memoryTokenBudget !== undefined ? { memoryTokenBudget } : {}),
           });
           reprocessStoredHistory();
           initSkillPopup(skills);
-          initMemoryPopup(memories);
+          initMemoryPopup(activeMemoryConfig?.customMemoryEnabled === true ? [] : memories);
           initPresetPopup(presets);
           updatePresetTag(activePreset);
           break;
@@ -120,10 +134,14 @@ export default defineContentScript({
         case 'MEMORY_CONFIG_UPDATED': {
           const config = event.data as MemoryConfig;
           if (typeof config.tokenBudget === 'number' && config.tokenBudget > 0) {
+            latestMemoryConfig = config;
             updateHookState({
               memoryTokenBudget: config.tokenBudget,
               singleMemoryInjection: config.singleMemoryInjection === true,
+              customMemoryEnabled: config.customMemoryEnabled === true,
+              customMemoryPrompt: typeof config.customMemoryPrompt === 'string' ? config.customMemoryPrompt : '',
             });
+            initMemoryPopup(config.customMemoryEnabled === true ? [] : latestMemories);
           }
           break;
         }

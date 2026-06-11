@@ -51,14 +51,16 @@ def main() -> int:
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         claude_records = [
             {
-                "type": "user",
+                "type": "tool_use",
                 "timestamp": timestamp,
-                "message": {"content": [{"type": "tool_result", "content": "Launching skill: kimi-webbridge"}]},
+                "tool_name": "skill",
+                "tool_input": {"name": "kimi-webbridge"},
             },
             {
-                "type": "user",
+                "type": "tool_use",
                 "timestamp": timestamp,
-                "message": {"content": [{"type": "tool_result", "content": "Launching skill: deep-research"}]},
+                "tool_name": "skill",
+                "tool_input": {"name": "deep-research"},
             },
         ]
         (claude_project / "session.jsonl").write_text("\n".join(json.dumps(record) for record in claude_records), encoding="utf-8")

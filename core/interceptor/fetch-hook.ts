@@ -1,10 +1,11 @@
 import { DEEPSEEK_API_URL } from '../constants';
-import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, getToolCloseTag, getToolOpenTag, hasXmlToolMarker } from '../tool';
+import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, hasXmlToolMarker } from '../tool';
 import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill, ToolDescriptor } from '../types';
-import { buildAugmentedPrompt, buildInstructionOnlyPrompt, renderUserInputBlock } from '../memory/injector';
+import { buildAugmentedPrompt, buildCustomMemoryPrompt, buildInstructionOnlyPrompt, renderUserInputBlock } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
 import { extractToolCalls, stripToolCalls } from './tool-parser';
+import { createToolMarkupStreamFilter, type ToolMarkupStreamFilter } from './tool-stream-filter';
 
 const API_PATH = new URL(DEEPSEEK_API_URL).pathname;
 const HISTORY_PATH = '/api/v0/chat/history_messages';
@@ -20,6 +21,8 @@ interface HookState {
   recognizedToolTags: string[];
   memoryTokenBudget: number;
   singleMemoryInjection: boolean;
+  customMemoryEnabled: boolean;
+  customMemoryPrompt: string;
   _lastChatSessionId: string | null;
   _singleInjectionSessionIds: Set<string>;
   onToolCall: (call: ToolCall) => void;
@@ -39,6 +42,8 @@ let hookState: HookState = {
   recognizedToolTags: [...DEFAULT_RECOGNIZED_TOOL_TAGS],
   memoryTokenBudget: 3000,
   singleMemoryInjection: false,
+  customMemoryEnabled: false,
+  customMemoryPrompt: '',
   _lastChatSessionId: null,
   _singleInjectionSessionIds: new Set(),
   onToolCall: () => {},
@@ -118,8 +123,8 @@ export function bindPendingSingleInjectionSession(sessionId: string) {
 let storedHistoryRaw: { json: unknown; sessionId: string | null } | null = null;
 
 interface ToolStreamFilterState {
-  insideToolBlock: boolean;
   sseRemainder: string;
+  textFilter: ToolMarkupStreamFilter;
 }
 
 export function updateHookState(partial: Partial<HookState>) {
@@ -224,7 +229,7 @@ function modifyRequestBody(bodyStr: string): string | null {
     body.model_type = hookState.modelType;
   }
 
-  const memInvocation = parseMemoryCommand(originalPrompt, hookState.memories);
+  const memInvocation = hookState.customMemoryEnabled ? null : parseMemoryCommand(originalPrompt, hookState.memories);
   // `#记忆名` 是显式手动注入路径，不参与普通自动记忆的单次去重。
   if (memInvocation) {
     const { memory, args } = memInvocation;
@@ -248,6 +253,13 @@ function modifyRequestBody(bodyStr: string): string | null {
   if (invocation) {
     const resolved = resolveSkills(invocation.skillName, invocation.args);
     if (resolved) {
+      if (hookState.customMemoryEnabled) {
+        const { augmented } = buildCustomMemoryModePrompt(resolved.userInput, presetInstruction, resolved.instructions);
+        body.prompt = augmented;
+        hookState.onSkillUsed(invocation.skillName);
+        return JSON.stringify(body);
+      }
+
       const instructionBlock = joinInstructionBlocks(presetInstruction, resolved.instructions);
       const useMemoryPrompt = shouldUseMemoryPromptForSkill(resolved);
       const { augmented, usedMemoryIds } = buildPromptForInstructionMode(
@@ -269,6 +281,12 @@ function modifyRequestBody(bodyStr: string): string | null {
 
   let targetMemories = hookState.memories;
   let identityOnly = false;
+
+  if (hookState.customMemoryEnabled) {
+    const { augmented } = buildCustomMemoryModePrompt(originalPrompt, presetInstruction);
+    body.prompt = augmented;
+    return JSON.stringify(body);
+  }
 
   if (hookState.activePreset) {
     if (isPresetMemoryEnabled()) {
@@ -394,6 +412,14 @@ function buildPromptForInstructionMode(
     toolDescriptors: hookState.toolDescriptors,
     instructionBlock,
   });
+}
+
+function buildCustomMemoryModePrompt(userInput: string, ...instructionBlocks: string[]): { augmented: string; usedMemoryIds: number[] } {
+  return buildCustomMemoryPrompt(
+    userInput,
+    joinInstructionBlocks(...instructionBlocks, hookState.customMemoryPrompt),
+    { toolDescriptors: hookState.toolDescriptors },
+  );
 }
 
 function joinInstructionBlocks(...blocks: string[]): string {
@@ -546,62 +572,8 @@ function filterParsedTextForDisplay(parsed: unknown, state: ToolStreamFilterStat
 }
 
 function filterToolMarkupFromText(text: string, state: ToolStreamFilterState): { text: string; changed: boolean } {
-  let output = '';
-  let cursor = 0;
-  let changed = false;
-
-  while (cursor < text.length) {
-    if (state.insideToolBlock) {
-      const endIndex = findNextToolCloseIndex(text, cursor);
-      if (endIndex === -1) {
-        changed = true;
-        break;
-      }
-      cursor = endIndex;
-      state.insideToolBlock = false;
-      changed = true;
-      continue;
-    }
-
-    const openMatch = findNextToolOpen(text, cursor);
-    if (!openMatch) {
-      output += text.slice(cursor);
-      break;
-    }
-
-    output += text.slice(cursor, openMatch.index);
-    cursor = openMatch.index + openMatch.tag.length;
-    state.insideToolBlock = true;
-    changed = true;
-  }
-
-  return { text: output, changed };
-}
-
-function findNextToolOpen(text: string, cursor: number): { index: number; tag: string } | null {
-  const catalog = createToolInvocationCatalog(hookState.toolDescriptors, hookState.recognizedToolTags);
-  let best: { index: number; tag: string } | null = null;
-  for (const name of catalog.invocationNames) {
-    const tag = getToolOpenTag(name);
-    const index = text.indexOf(tag, cursor);
-    if (index !== -1 && (!best || index < best.index)) best = { index, tag };
-  }
-  return best;
-}
-
-function findNextToolCloseIndex(text: string, cursor: number): number {
-  const catalog = createToolInvocationCatalog(hookState.toolDescriptors, hookState.recognizedToolTags);
-  let best = -1;
-  let bestLength = 0;
-  for (const name of catalog.invocationNames) {
-    const tag = getToolCloseTag(name);
-    const index = text.indexOf(tag, cursor);
-    if (index !== -1 && (best === -1 || index < best)) {
-      best = index;
-      bestLength = tag.length;
-    }
-  }
-  return best === -1 ? -1 : best + bestLength;
+  const output = state.textFilter.push(text);
+  return { text: output, changed: output !== text };
 }
 
 async function interceptFetchResponse(responsePromise: Promise<Response>): Promise<Response> {
@@ -615,7 +587,13 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
   let notifiedCount = 0;
   let completed = false;
   let rawSSEAccumulator = '';
-  const displayFilterState: ToolStreamFilterState = { insideToolBlock: false, sseRemainder: '' };
+  const displayFilterState: ToolStreamFilterState = {
+    sseRemainder: '',
+    textFilter: createToolMarkupStreamFilter({
+      descriptors: hookState.toolDescriptors,
+      recognizedTags: hookState.recognizedToolTags,
+    }),
+  };
 
   const finalizeIfNeeded = () => {
     if (completed) return;

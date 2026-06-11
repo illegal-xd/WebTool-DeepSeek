@@ -293,7 +293,10 @@ async function handleMessage(
     case 'SET_MEMORY_CONFIG': {
       const config = message.payload as MemoryConfig;
       await saveMemoryConfig(config);
-      await broadcastToTabs({ type: 'MEMORY_CONFIG_UPDATED', ...config }, sender.tab?.id);
+      const savedConfig = await getMemoryConfig();
+      const payload = { type: 'MEMORY_CONFIG_UPDATED', ...savedConfig };
+      await broadcastToTabs(payload, sender.tab?.id);
+      chrome.runtime.sendMessage(payload).catch(() => {});
       return { ok: true };
     }
 
