@@ -1,5 +1,5 @@
 import { getLocalValue, setLocalValue } from '../storage/chrome';
-import { SYSTEM_TEMPLATE_CHAT } from '../constants';
+import { SYSTEM_TEMPLATE_CHAT } from '../templates';
 
 const STORAGE_KEY = 'webtool_deepseek_memory_config';
 

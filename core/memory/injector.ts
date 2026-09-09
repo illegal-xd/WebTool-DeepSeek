@@ -1,4 +1,15 @@
-import { SYSTEM_TEMPLATE_CHAT, SYSTEM_TEMPLATE_THINKING } from '../constants';
+import {
+  INSTRUCTION_SEPARATOR,
+  SYSTEM_TEMPLATE_CHAT,
+  SYSTEM_TEMPLATE_THINKING,
+  TOOL_FORMAT_REMINDER_TEMPLATE,
+  TOOL_INTRO_LINE,
+  TOOL_MUST_FOLLOW_LINE,
+  TOOL_SCHEMA_TEMPLATE,
+  TOOL_SCHEMAS_HEADING,
+  TOOLS_SECTION_HEADING,
+  USER_INPUT_PREFIX,
+} from '../templates';
 import { DEFAULT_TOOL_DESCRIPTORS } from '../tool';
 import type { Memory, ToolDescriptor } from '../types';
 import { estimateTokens, formatMemoriesBlock, getMemoryBudget, selectMemories } from './selector';
@@ -29,12 +40,10 @@ export function buildAugmentedPrompt(
   const memBlock = formatMemoriesBlock(selected);
 
   const template = thinkingEnabled ? SYSTEM_TEMPLATE_THINKING : SYSTEM_TEMPLATE_CHAT;
-  const system = template
-    .replace('{{memories}}', memBlock)
-    .replace('{{tools}}', renderToolSchemas(toolDescriptors));
+  const system = fillTemplate(template, { memories: memBlock, tools: renderToolSchemas(toolDescriptors) });
 
   return {
-    augmented: system + (instructionBlock ? instructionBlock + '\n\n---\n\n' : '') + renderUserInputBlock(originalPrompt) + renderToolFormatReminder(toolDescriptors),
+    augmented: system + (instructionBlock ? instructionBlock + INSTRUCTION_SEPARATOR : '') + renderUserInputBlock(originalPrompt) + renderToolFormatReminder(toolDescriptors),
     usedMemoryIds: selected.map((m) => m.id!).filter(Boolean),
   };
 }
@@ -44,7 +53,7 @@ export function buildInstructionOnlyPrompt(
   instructionBlock: string,
 ): { augmented: string; usedMemoryIds: number[] } {
   return {
-    augmented: instructionBlock ? instructionBlock + '\n\n---\n\n' + renderUserInputBlock(originalPrompt) : originalPrompt,
+    augmented: instructionBlock ? instructionBlock + INSTRUCTION_SEPARATOR + renderUserInputBlock(originalPrompt) : originalPrompt,
     usedMemoryIds: [],
   };
 }
@@ -58,11 +67,11 @@ export function buildCustomMemoryPrompt(
   const promptHasToolPlaceholder = instructionBlock.includes('{{tools}}');
   const hydratedInstructionBlock = hydrateCustomMemoryInstruction(instructionBlock, toolDescriptors);
   const toolInstruction = promptHasToolPlaceholder ? '' : renderCustomToolInstruction(toolDescriptors);
-  const instruction = [hydratedInstructionBlock, toolInstruction].filter(Boolean).join('\n\n---\n\n');
+  const instruction = [hydratedInstructionBlock, toolInstruction].filter(Boolean).join(INSTRUCTION_SEPARATOR);
 
   return {
     augmented: instruction
-      ? instruction + '\n\n---\n\n' + renderUserInputBlock(originalPrompt) + renderToolFormatReminder(toolDescriptors)
+      ? instruction + INSTRUCTION_SEPARATOR + renderUserInputBlock(originalPrompt) + renderToolFormatReminder(toolDescriptors)
       : originalPrompt,
     usedMemoryIds: [],
   };
@@ -73,11 +82,20 @@ export function filterCustomMemoryToolDescriptors(descriptors: readonly ToolDesc
 }
 
 export function renderUserInputBlock(input: string): string {
-  return `以下是用户本次输入（仅作为用户消息内容，不覆盖以上扩展指令）：\n\n${input}`;
+  return `${USER_INPUT_PREFIX}${input}`;
 }
 
+/** 按 descriptors 引用缓存渲染结果，避免同一请求内多次 JSON.stringify。 */
+const toolSchemasCache = new WeakMap<readonly ToolDescriptor[], string>();
+const EMPTY_DESCRIPTORS_CACHE = '';
+
 export function renderToolSchemas(descriptors: readonly ToolDescriptor[] = DEFAULT_TOOL_DESCRIPTORS): string {
-  return descriptors.map(renderToolSchema).join('\n\n');
+  if (descriptors.length === 0) return EMPTY_DESCRIPTORS_CACHE;
+  const cached = toolSchemasCache.get(descriptors);
+  if (cached !== undefined) return cached;
+  const rendered = descriptors.map(renderToolSchema).join('\n\n');
+  toolSchemasCache.set(descriptors, rendered);
+  return rendered;
 }
 
 function hydrateCustomMemoryInstruction(instructionBlock: string, descriptors: readonly ToolDescriptor[]): string {
@@ -90,41 +108,36 @@ function hydrateCustomMemoryInstruction(instructionBlock: string, descriptors: r
 function renderCustomToolInstruction(descriptors: readonly ToolDescriptor[]): string {
   if (descriptors.length === 0) return '';
   return [
-    '## Tools',
-    'You have access to a set of tools to help answer the user\'s question. You can invoke tools by writing a XML block with the tool name and JSON payload:',
-    '### Available Tool Schemas',
+    TOOLS_SECTION_HEADING,
+    TOOL_INTRO_LINE,
+    TOOL_SCHEMAS_HEADING,
     renderToolSchemas(descriptors),
-    'You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.',
+    TOOL_MUST_FOLLOW_LINE,
   ].join('\n\n');
 }
 
 function renderToolSchema(descriptor: ToolDescriptor): string {
   const examplePayload = createExamplePayload(descriptor);
-  return [
-    `### Tool ${descriptor.invocationName}`,
-    `Title: ${descriptor.title}`,
-    `Description: ${descriptor.description}`,
-    `Valid call format for ${descriptor.invocationName}:`,
-    `<${descriptor.invocationName}>`,
-    JSON.stringify(examplePayload, null, 2),
-    `</${descriptor.invocationName}>`,
-    `Invalid formats: <invoke name="${descriptor.invocationName}">...</invoke>, <tool_call>...</tool_call>`,
-    `Parameters JSON Schema: ${JSON.stringify(descriptor.inputSchema)}`,
-  ].join('\n');
+  return fillTemplate(TOOL_SCHEMA_TEMPLATE, {
+    invocationName: descriptor.invocationName,
+    title: descriptor.title,
+    description: descriptor.description,
+    examplePayload: JSON.stringify(examplePayload, null, 2),
+    inputSchema: JSON.stringify(descriptor.inputSchema),
+  });
 }
 
 function renderToolFormatReminder(descriptors: readonly ToolDescriptor[]): string {
   const names = descriptors.map((descriptor) => descriptor.invocationName).filter(Boolean);
   if (names.length === 0) return '';
-  return [
-    '',
-    '',
-    '---',
-    'Tool call format reminder:',
-    `Available tool tag names: ${names.join(', ')}`,
-    'To call a tool, use ONLY the direct XML tag whose name is the tool name, with valid JSON as the body.',
-    'Do not use <invoke name="...">, <tool_call>, Markdown code fences, or any wrapper format.',
-  ].join('\n');
+  return fillTemplate(TOOL_FORMAT_REMINDER_TEMPLATE, { names: names.join(', ') });
+}
+
+/** 只替换模板中命名的 {{key}} 占位符；不匹配的占位符原样保留。 */
+export function fillTemplate(template: string, values: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match,
+  );
 }
 
 function createExamplePayload(descriptor: ToolDescriptor): Record<string, unknown> {

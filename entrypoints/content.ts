@@ -102,6 +102,20 @@ async function safeStorageLocalSet(data: Record<string, unknown>): Promise<void>
   }
 }
 
+/** 一次性拉取注入相关全部状态（记忆/技能/预设/模型/工具/记忆配置）。 */
+async function fetchAllState() {
+  const [memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig] = await Promise.all([
+    safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
+    safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
+    safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
+    safeRuntimeSendMessage<SystemPromptPreset | null>({ type: 'GET_ACTIVE_PRESET' }),
+    safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
+    safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
+    safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }),
+  ]);
+  return { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig };
+}
+
 export default defineContentScript({
   matches: ['*://chat.deepseek.com/*'],
   runAt: 'document_start',
@@ -111,15 +125,8 @@ export default defineContentScript({
       else document.addEventListener('DOMContentLoaded', () => r(undefined), { once: true });
     });
 
-    const [memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig] = await Promise.all([
-      safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
-      safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
-      safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
-      safeRuntimeSendMessage<SystemPromptPreset | null>({ type: 'GET_ACTIVE_PRESET' }),
-      safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
-      safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
-      safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }),
-    ]);
+    const state = await fetchAllState();
+    const { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig } = state;
 
     currentToolDescriptors = toolDescriptors ?? [];
     syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors, memoryConfig ?? undefined);
@@ -186,16 +193,17 @@ export default defineContentScript({
         case 'SET_ACTIVE_PRESET': {
           const id = event.data.id as string | null;
           await safeRuntimeSendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
-          const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
-            safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
-            safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
-            safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
-            safeRuntimeSendMessage<SystemPromptPreset | null>({ type: 'GET_ACTIVE_PRESET' }),
-            safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
-            safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
-          ]);
-          currentToolDescriptors = toolDescriptors ?? [];
-          syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors);
+          const state = await fetchAllState();
+          currentToolDescriptors = state.toolDescriptors ?? [];
+          syncToMainWorld(
+            state.memories ?? [],
+            state.skills ?? [],
+            state.presets ?? [],
+            state.activePreset,
+            state.modelType,
+            currentToolDescriptors,
+            state.memoryConfig ?? undefined,
+          );
           cleanRenderedToolCalls();
           break;
         }
@@ -258,7 +266,6 @@ export default defineContentScript({
     });
 
     setupDOMObserver();
-    setupToolCleanupObserver();
   },
 });
 
@@ -999,49 +1006,6 @@ function shouldScheduleToolCleanup(assistantMessage: Element, text: string): boo
   return hasPotentialToolMarkup(text);
 }
 
-function setupToolCleanupObserver() {
-  const observer = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      if (mutation.type === 'characterData') {
-        const parent = mutation.target.parentElement;
-        const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
-        if (!assistantMessage) continue;
-        const text = mutation.target.textContent || '';
-        if (shouldScheduleToolCleanup(assistantMessage, text)) {
-          scheduleToolCleanupForMessage(assistantMessage);
-        }
-        continue;
-      }
-
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          const parent = node.parentElement;
-          const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
-          if (!assistantMessage) continue;
-          const text = node.textContent || '';
-          if (shouldScheduleToolCleanup(assistantMessage, text)) {
-            scheduleToolCleanupForMessage(assistantMessage);
-          }
-          continue;
-        }
-
-        if (node.nodeType !== Node.ELEMENT_NODE) continue;
-        const element = node as Element;
-        if (isInsideToolBlock(element)) continue;
-
-        const assistantMessage = getAssistantMessageRoot(element)
-          ?? getFirstAssistantMessageDescendant(element);
-        if (!assistantMessage) continue;
-
-        if (shouldScheduleToolCleanup(assistantMessage, element.textContent || '')) {
-          scheduleToolCleanupForMessage(assistantMessage);
-        }
-      }
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-}
-
 function getFirstAssistantMessageDescendant(element: Element): Element | null {
   return element.querySelector(ASSISTANT_MESSAGE_SELECTOR);
 }
@@ -1081,11 +1045,14 @@ function cleanRenderedToolCallsInMessage(assistantMessage: Element) {
 }
 
 function cleanRenderedToolCallElements(assistantMessage: Element): Set<string> | null {
-  const tagNames = new Map(getRecognizedToolTagNames().map((name) => [name.toLowerCase(), name]));
-  if (tagNames.size === 0) return null;
+  const names = getRecognizedToolTagNames();
+  if (names.length === 0) return null;
+  const tagNames = new Map(names.map((name) => [name.toLowerCase(), name]));
+  // 只查询已知工具标签，避免对整条消息做全量 * 遍历。
+  const selector = names.map((name) => CSS.escape(name)).join(',');
 
   const foundTags = new Set<string>();
-  assistantMessage.querySelectorAll('*').forEach((element) => {
+  assistantMessage.querySelectorAll(selector).forEach((element) => {
     if (isInsideToolBlock(element)) return;
     const tagName = tagNames.get(element.localName.toLowerCase());
     if (!tagName) return;
@@ -1184,20 +1151,21 @@ function mergeTextRemovalRanges(ranges: TextRemovalRange[]): TextRemovalRange[] 
   return merged;
 }
 
-// ─── DOM Observer (background image patching + tool block) ────────
+// ─── DOM Observer (background image patching + tool block + tool cleanup) ──
+
+let toolRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleRestore() {
+  if (toolRestoreTimer) clearTimeout(toolRestoreTimer);
+  toolRestoreTimer = setTimeout(() => {
+    toolRestoreTimer = null;
+    restorePersistedToolBlocks();
+  }, 200);
+}
 
 function setupDOMObserver() {
   let patchTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPathname = window.location.pathname;
-  let restoreTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const scheduleRestore = () => {
-    if (restoreTimer) clearTimeout(restoreTimer);
-    restoreTimer = setTimeout(() => {
-      restoreTimer = null;
-      restorePersistedToolBlocks();
-    }, 200);
-  };
 
   const checkRouteChange = () => {
     if (lastPathname === window.location.pathname) return;
@@ -1211,13 +1179,19 @@ function setupDOMObserver() {
     let needsPatch = false;
 
     for (const mutation of mutations) {
+      if (mutation.type === 'characterData') {
+        handleTextMutation(mutation);
+        continue;
+      }
       for (const node of mutation.addedNodes) {
-        if (node.nodeType !== Node.ELEMENT_NODE) continue;
-        needsPatch = true;
-        const el = node as HTMLElement;
-        if (isRouteRestoreWindowActive() && (getAssistantMessageRoot(el) || getFirstAssistantMessageDescendant(el))) {
-          scheduleRestore();
+        if (node.nodeType === Node.TEXT_NODE) {
+          handleTextNodeAdded(node);
+          continue;
         }
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        const el = node as HTMLElement;
+        needsPatch = true;
+        handleElementAdded(el);
       }
     }
 
@@ -1230,7 +1204,42 @@ function setupDOMObserver() {
     }
   });
 
-  observer.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+
+/** 文本节点内容变化（流式输出）时调度工具标记清理。 */
+function handleTextMutation(mutation: MutationRecord) {
+  const parent = mutation.target.parentElement;
+  const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
+  if (!assistantMessage) return;
+  const text = mutation.target.textContent || '';
+  if (shouldScheduleToolCleanup(assistantMessage, text)) {
+    scheduleToolCleanupForMessage(assistantMessage);
+  }
+}
+
+/** 新增文本节点（流式输出追加）时调度工具标记清理。 */
+function handleTextNodeAdded(node: Node) {
+  const parent = node.parentElement;
+  const assistantMessage = parent ? getAssistantMessageRoot(parent) : null;
+  if (!assistantMessage) return;
+  const text = node.textContent || '';
+  if (shouldScheduleToolCleanup(assistantMessage, text)) {
+    scheduleToolCleanupForMessage(assistantMessage);
+  }
+}
+
+/** 新增元素节点：路由恢复窗口内尝试恢复工具卡片；同时调度工具标记清理。 */
+function handleElementAdded(el: HTMLElement) {
+  if (isRouteRestoreWindowActive() && (getAssistantMessageRoot(el) || getFirstAssistantMessageDescendant(el))) {
+    scheduleRestore();
+  }
+  if (isInsideToolBlock(el)) return;
+  const assistantMessage = getAssistantMessageRoot(el) ?? getFirstAssistantMessageDescendant(el);
+  if (!assistantMessage) return;
+  if (shouldScheduleToolCleanup(assistantMessage, el.textContent || '')) {
+    scheduleToolCleanupForMessage(assistantMessage);
+  }
 }
 
 function hasPotentialToolMarkup(text: string): boolean {

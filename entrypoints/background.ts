@@ -458,10 +458,14 @@ async function handleMessage(
   }
 }
 
-async function sendDeepSeekTabMessage<T>(message: { type: string; payload?: unknown }): Promise<T> {
+async function findDeepSeekTab(): Promise<chrome.tabs.Tab | undefined> {
   const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
-  const target = tabs.find((tab) => tab.active && tab.id !== undefined)
+  return tabs.find((tab) => tab.active && tab.id !== undefined)
     ?? tabs.find((tab) => tab.id !== undefined);
+}
+
+async function sendDeepSeekTabMessage<T>(message: { type: string; payload?: unknown }): Promise<T> {
+  const target = await findDeepSeekTab();
   if (!target?.id) {
     throw new Error('请先打开并登录 DeepSeek 页面');
   }
@@ -474,18 +478,14 @@ async function sendDeepSeekTabMessage<T>(message: { type: string; payload?: unkn
 }
 
 async function navigateDeepSeekToNewChat() {
-  const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
-  const target = tabs.find((tab) => tab.active && tab.id !== undefined)
-    ?? tabs.find((tab) => tab.id !== undefined);
+  const target = await findDeepSeekTab();
   if (!target?.id) return;
 
   await chrome.tabs.update(target.id, { url: NEW_CHAT_URL });
 }
 
 async function refreshDeepSeekTab() {
-  const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
-  const target = tabs.find((tab) => tab.active && tab.id !== undefined)
-    ?? tabs.find((tab) => tab.id !== undefined);
+  const target = await findDeepSeekTab();
   if (!target?.id) return;
 
   await chrome.tabs.reload(target.id, { bypassCache: true });

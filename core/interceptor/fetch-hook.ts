@@ -1,7 +1,8 @@
 import { DEEPSEEK_API_URL } from '../constants';
+import { INSTRUCTION_SEPARATOR, MEMORY_BACKGROUND_TEMPLATE } from '../templates';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, hasXmlToolMarker } from '../tool';
 import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill, ToolDescriptor } from '../types';
-import { buildAugmentedPrompt, buildCustomMemoryPrompt, buildInstructionOnlyPrompt, renderUserInputBlock } from '../memory/injector';
+import { buildAugmentedPrompt, buildCustomMemoryPrompt, buildInstructionOnlyPrompt, fillTemplate, renderUserInputBlock } from '../memory/injector';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
 import { extractToolCalls, stripToolCalls } from './tool-parser';
@@ -423,7 +424,7 @@ function buildCustomMemoryModePrompt(userInput: string, ...instructionBlocks: st
 }
 
 function joinInstructionBlocks(...blocks: string[]): string {
-  return blocks.map((block) => block.trim()).filter(Boolean).join('\n\n---\n\n');
+  return blocks.map((block) => block.trim()).filter(Boolean).join(INSTRUCTION_SEPARATOR);
 }
 
 function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
@@ -434,7 +435,7 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
   if (secondInvocation) {
     const secondSkill = hookState.skills.find((s) => s.name === secondInvocation.skillName);
     if (secondSkill) {
-      const combinedInstructions = primarySkill.instructions + '\n\n---\n\n' + secondSkill.instructions;
+      const combinedInstructions = primarySkill.instructions + INSTRUCTION_SEPARATOR + secondSkill.instructions;
 
       const anyMemoryEnabled = primarySkill.memoryEnabled || secondSkill.memoryEnabled;
 
@@ -993,7 +994,10 @@ function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation
 }
 
 function wrapMemoryInput(memoryName: string, memoryContent: string, userInput: string): string {
-  const header = `背景信息（记忆：${memoryName}）：\n${memoryContent}`;
+  const header = fillTemplate(MEMORY_BACKGROUND_TEMPLATE, {
+    memoryName,
+    memoryContent,
+  });
   if (!userInput) return header;
-  return `${header}\n\n---\n\n${renderUserInputBlock(userInput)}`;
+  return `${header}${INSTRUCTION_SEPARATOR}${renderUserInputBlock(userInput)}`;
 }

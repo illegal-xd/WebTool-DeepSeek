@@ -1,5 +1,6 @@
 import type { Memory } from '../types';
 import { memoryWeight } from '../weighting';
+import { SLIDE_UP_KEYFRAMES, injectStyleElement } from './popup-common';
 
 let popupEl: HTMLElement | null = null;
 let memories: Memory[] = [];
@@ -222,10 +223,7 @@ function isVisible() {
 }
 
 function injectStyles() {
-  if (document.getElementById('dpp-memory-popup-css')) return;
-  const style = document.createElement('style');
-  style.id = 'dpp-memory-popup-css';
-  style.textContent = `
+  injectStyleElement('dpp-memory-popup-css', `
 .dpp-memory-popup {
   position: fixed;
   z-index: 99999;
@@ -242,10 +240,7 @@ function injectStyles() {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-@keyframes dpp-slide-up {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
+${SLIDE_UP_KEYFRAMES}
 .dpp-memory-item {
   padding: 8px 12px;
   border-radius: 8px;
@@ -313,6 +308,5 @@ function injectStyles() {
   border-top: 1px solid var(--dpp-prompt-hint-border, #F3F4F6);
   margin-top: 4px;
 }
-`;
-  document.head.appendChild(style);
+`);
 }
