@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ThemeProvider } from '../../lib/ThemeContext';
 import App from './App';
+import 'virtual:uno.css';
 import './style.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

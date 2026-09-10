@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Skill } from '../../../core/types';
 import { sortSkillsByWeight } from '../../../core/weighting';
 import SkillCard from '../components/SkillCard';
+import Skeleton from '../components/ui/Skeleton';
 import SkillForm from '../components/SkillForm';
 import SidepanelModal from '../components/SidepanelModal';
 
@@ -77,13 +78,19 @@ function SkillSection({
 
 export default function SkillPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
   const [isFormWide, setIsFormWide] = useState(false);
 
   const load = useCallback(async () => {
-    const list: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
-    setSkills(list ?? []);
+    setLoading(true);
+    try {
+      const list: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
+      setSkills(list ?? []);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -159,8 +166,14 @@ export default function SkillPage() {
         />
       </SidepanelModal>
 
-      <SkillSection title="内置" skills={builtin} collapsible={true} />
-      <SkillSection title="自定义" skills={custom} onEdit={setEditingSkill} onDelete={handleDelete} />
+      {loading ? (
+        <Skeleton lines={5} style={{ paddingTop: 4 }} />
+      ) : (
+        <>
+          <SkillSection title="内置" skills={builtin} collapsible={true} />
+          <SkillSection title="自定义" skills={custom} onEdit={setEditingSkill} onDelete={handleDelete} />
+        </>
+      )}
 
       <div className="ds-info-panel rounded-xl p-3.5">
         <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>

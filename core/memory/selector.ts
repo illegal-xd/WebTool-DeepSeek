@@ -1,5 +1,5 @@
 import type { Memory, MemoryScope } from '../types';
-import { MEMORY_TOKEN_BUDGET, STOP_WORDS } from '../constants';
+import { MEMORY_KEYWORD_MAX_HITS, MEMORY_SINGLE_ENTRY_MAX_RATIO, MEMORY_TOKEN_BUDGET, STOP_WORDS } from '../constants';
 import { memoryWeight, normalizeMemoryScope } from '../weighting';
 
 const segmenter =
@@ -27,7 +27,12 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length * 0.35);
 }
 
-function keywordScore(promptWords: string[], memory: Memory): number {
+/**
+ * 关键词计分。命中数一律饱和到 MEMORY_KEYWORD_MAX_HITS，避免长文本按词频
+ * 无界累加（实测同一主题下 6k 字符长文可达 +6000，短记忆仅 +25）。
+ * 计分权重保持 tag > name > content 的相对关系。
+ */
+export function keywordScore(promptWords: string[], memory: Memory): number {
   const promptSet = new Set(promptWords);
 
   let tagHits = 0;
@@ -51,7 +56,11 @@ function keywordScore(promptWords: string[], memory: Memory): number {
     if (promptSet.has(w)) contentHits++;
   }
 
-  return tagHits * 20 + nameHits * 15 + contentHits * 5;
+  return (
+    Math.min(tagHits, MEMORY_KEYWORD_MAX_HITS.tag) * 20 +
+    Math.min(nameHits, MEMORY_KEYWORD_MAX_HITS.name) * 15 +
+    Math.min(contentHits, MEMORY_KEYWORD_MAX_HITS.content) * 5
+  );
 }
 
 function decayScore(memory: Memory): number {
@@ -62,7 +71,6 @@ function decayScore(memory: Memory): number {
 
 export interface SelectOptions {
   budget?: number;
-  identityOnly?: boolean;
 }
 
 export function getMemoryBudget(promptTokens: number, baseBudget = MEMORY_TOKEN_BUDGET): number {
@@ -84,30 +92,25 @@ const SCOPE_BUDGET_RATIO: Record<string, number> = {
 
 const SCOPE_ORDER: MemoryScope[] = ['permanent', 'contextual', 'temporary'];
 
-export function selectMemories(
-  prompt: string,
-  allMemories: Memory[],
-  options?: SelectOptions,
-): Memory[] {
-  if (allMemories.length === 0) return [];
+interface ScoredEntry {
+  memory: Memory;
+  score: number;
+  cost: number;
+}
 
-  const { budget = MEMORY_TOKEN_BUDGET, identityOnly = false } = options ?? {};
-
-  const candidates = identityOnly
-    ? allMemories.filter((m) => m.type === 'user' || m.type === 'feedback' || m.pinned)
-    : allMemories;
-
-  if (candidates.length === 0) return [];
-
-  const promptWords = segmentText(prompt);
-
-  // Group candidates by scope and compute scores
-  const byScope = new Map<MemoryScope, Array<{ memory: Memory; score: number; cost: number }>>();
+/** 按 scope 分组打分并按分数降序；成本超过单条上限的记忆先剔除（数据不受影响）。 */
+function scoreCandidates(
+  candidates: Memory[],
+  promptWords: string[],
+  singleEntryCap: number,
+): Map<MemoryScope, ScoredEntry[]> {
+  const byScope = new Map<MemoryScope, ScoredEntry[]>();
   for (const memory of candidates) {
+    const cost = estimateTokens(formatMemoryLine(memory));
+    if (cost > singleEntryCap) continue;
     const scope = normalizeMemoryScope(memory);
     if (!byScope.has(scope)) byScope.set(scope, []);
     const score = memoryWeight(memory, keywordScore(promptWords, memory)) + decayScore(memory);
-    const cost = estimateTokens(formatMemoryLine(memory));
     byScope.get(scope)!.push({ memory, score, cost });
   }
 
@@ -115,16 +118,19 @@ export function selectMemories(
   for (const group of byScope.values()) {
     group.sort((a, b) => b.score - a.score);
   }
+  return byScope;
+}
 
-  // Also keep a flat master list for easy overflow fallback (sorted by score)
-  const masterSorted = [...byScope.values()]
-    .flat()
-    .sort((a, b) => b.score - a.score);
-
+/** Phase 1 分层分配（每层预算切片，剩余溢出下一层）+ Phase 2 按分数填充剩余预算。 */
+function allocateLayered(
+  byScope: Map<MemoryScope, ScoredEntry[]>,
+  masterSorted: ScoredEntry[],
+  budget: number,
+): Memory[] {
   const selected: Memory[] = [];
   const selectedSet = new Set<number | undefined>();
 
-  const tryAdd = (entry: { memory: Memory; cost: number; score: number }, remaining: number): number => {
+  const tryAdd = (entry: ScoredEntry, remaining: number): number => {
     const memId = entry.memory.id;
     if (memId != null && selectedSet.has(memId)) return remaining;
     if (remaining - entry.cost < 0 && selected.length > 0) return remaining;
@@ -133,7 +139,6 @@ export function selectMemories(
     return remaining - entry.cost;
   };
 
-  // Phase 1: Layered allocation — each scope gets its budget slice
   let overflowBudget = 0;
   for (const scope of SCOPE_ORDER) {
     const group = byScope.get(scope);
@@ -143,9 +148,8 @@ export function selectMemories(
       continue;
     }
 
-    const scopeBudget = Math.floor(budget * SCOPE_BUDGET_RATIO[scope]) + overflowBudget;
+    let remaining = Math.floor(budget * SCOPE_BUDGET_RATIO[scope]) + overflowBudget;
     overflowBudget = 0;
-    let remaining = scopeBudget;
 
     for (const entry of group) {
       const next = tryAdd(entry, remaining);
@@ -157,7 +161,6 @@ export function selectMemories(
     overflowBudget = remaining;
   }
 
-  // Phase 2: If budget remains, add any remaining candidates by score
   if (overflowBudget > 0) {
     for (const entry of masterSorted) {
       overflowBudget = tryAdd(entry, overflowBudget);
@@ -165,6 +168,28 @@ export function selectMemories(
   }
 
   return selected;
+}
+
+export function selectMemories(
+  prompt: string,
+  allMemories: Memory[],
+  options?: SelectOptions,
+): Memory[] {
+  if (allMemories.length === 0) return [];
+
+  const { budget = MEMORY_TOKEN_BUDGET } = options ?? {};
+
+  // 单条上限：超过预算 MEMORY_SINGLE_ENTRY_MAX_RATIO 的记忆直接不参与（数据不受影响），
+  // 否则「首条无条件加入」的兜底会让一条长文档记忆把整轮预算撑爆并挤掉其他记忆。
+  const singleEntryCap = Math.floor(budget * MEMORY_SINGLE_ENTRY_MAX_RATIO);
+  const byScope = scoreCandidates(allMemories, segmentText(prompt), singleEntryCap);
+
+  // Flat master list for easy overflow fallback (sorted by score)
+  const masterSorted = [...byScope.values()]
+    .flat()
+    .sort((a, b) => b.score - a.score);
+
+  return allocateLayered(byScope, masterSorted, budget);
 }
 
 function sanitizeContent(text: string): string {

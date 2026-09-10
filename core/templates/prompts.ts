@@ -57,12 +57,10 @@ export const SYSTEM_TEMPLATE_THINKING = `{{memoryContext}}
 
 `;
 
-// ─── 工具 schema（历史 JSON 字符串，供 builtin skill 与兼容使用） ──
+// ─── 工具 schema（历史 JSON 字符串，仅供内置技能占位符使用） ──
 
-// @Iteration: [v0.6] 私有常量无任何引用，迁出 constants.ts 集中管理；改为
-// 推荐使用 MEMORY_TOOL_DESCRIPTORS（core/tool/memory.ts）结构化定义。
-export const MEMORY_SAVE_SCHEMA = '{"type": "function", "function": {"name": "memory_save", "description": "保存一条新的长期记忆", "parameters": {"type": "object", "properties": {"type": {"type": "string", "enum": ["user", "feedback", "topic", "reference"], "description": "记忆类型：user=身份角色偏好, feedback=行为纠正, topic=讨论要点, reference=外部资源链接"}, "name": {"type": "string", "description": "简短标题"}, "content": {"type": "string", "description": "要保存的内容"}, "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表"}}, "required": ["type", "name", "content", "tags"]}}}';
-
+// 渲染内置技能的 {{memoryUpdateSchema}} / {{memoryDeleteSchema}} 占位符（core/skill/builtin.ts）；
+// 其余场景请使用 MEMORY_TOOL_DESCRIPTORS（core/tool/memory.ts）结构化定义。
 export const MEMORY_UPDATE_SCHEMA = '{"type": "function", "function": {"name": "memory_update", "description": "更新已有记忆", "parameters": {"type": "object", "properties": {"id": {"type": "integer", "description": "记忆ID"}, "type": {"type": "string", "enum": ["user", "feedback", "topic", "reference"], "description": "记忆类型"}, "name": {"type": "string", "description": "更新后的标题"}, "content": {"type": "string", "description": "更新后的内容"}, "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表"}}, "required": ["id", "type", "name", "content", "tags"]}}}';
 
 export const MEMORY_DELETE_SCHEMA = '{"type": "function", "function": {"name": "memory_delete", "description": "删除记忆", "parameters": {"type": "object", "properties": {"id": {"type": "integer", "description": "记忆ID"}}, "required": ["id"]}}}';
@@ -81,9 +79,6 @@ export const TOOLS_SECTION_HEADING = '## 工具';
 
 export const TOOL_INTRO_LINE =
   '你拥有以下工具，可用于帮助回答用户的问题。可以使用 XML 块调用工具，格式为：工具名 + JSON 载荷：';
-
-export const TOOL_EXAMPLE_LINE =
-  '<memory_save>{"type": "user", "name": "标题", "content": "要保存的内容", "tags": ["标签1", "标签2"]}</memory_save>';
 
 export const TOOL_SCHEMAS_HEADING = '### 可用工具 Schema';
 

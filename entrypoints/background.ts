@@ -4,6 +4,7 @@ import {
   saveMemory,
   updateMemory,
   deleteMemory,
+  restoreMemory,
   touchMemories,
   replaceAllMemories,
   archiveStaleMemories,
@@ -15,10 +16,7 @@ import {
   getAllPresets,
   savePreset,
   deletePreset,
-  getActivePreset,
-  setActivePresetId,
   replaceAllPresets,
-  touchPreset,
 } from '../core/preset/store';
 import { getModelType, setModelType } from '../core/model/store';
 import { getBackgroundConfig, saveBackgroundConfig, clearBackgroundConfig } from '../core/background/store';
@@ -81,8 +79,10 @@ async function handleMessage(
   sender: chrome.runtime.MessageSender,
 ) {
   switch (message.type) {
-    case 'GET_MEMORIES':
-      return getAllMemories();
+    case 'GET_MEMORIES': {
+      const { includeArchived } = (message.payload ?? {}) as { includeArchived?: boolean };
+      return getAllMemories(includeArchived === true);
+    }
 
     case 'GET_MEMORY_BY_ID': {
       const { id: memId } = message.payload as { id: number };
@@ -108,6 +108,13 @@ async function handleMessage(
       return { ok: true };
     }
 
+    case 'RESTORE_MEMORY': {
+      const { id } = message.payload as { id: number };
+      await restoreMemory(id);
+      await broadcastStateUpdate(sender.tab?.id);
+      return { ok: true };
+    }
+
     case 'TOUCH_MEMORIES': {
       const { ids } = message.payload as { ids: number[] };
       await touchMemories(ids);
@@ -117,15 +124,11 @@ async function handleMessage(
     case 'TOUCH_USAGE': {
       const target = message.payload as
         | { kind: 'memory'; id: number }
-        | { kind: 'skill'; name: string }
-        | { kind: 'preset'; id: string };
+        | { kind: 'skill'; name: string };
       if (target.kind === 'memory') {
         await touchMemories([target.id]);
       } else if (target.kind === 'skill') {
         await touchSkill(target.name);
-        await broadcastStateUpdate(sender.tab?.id);
-      } else if (target.kind === 'preset') {
-        await touchPreset(target.id);
         await broadcastStateUpdate(sender.tab?.id);
       }
       return { ok: true };
@@ -162,19 +165,6 @@ async function handleMessage(
       await broadcastStateUpdate(sender.tab?.id);
       return { ok: true };
     }
-
-    case 'SET_ACTIVE_PRESET': {
-      const { id: activeId } = message.payload as { id: string | null };
-      await setActivePresetId(activeId);
-      if (activeId) {
-        await touchPreset(activeId);
-      }
-      await broadcastStateUpdate(sender.tab?.id);
-      return { ok: true };
-    }
-
-    case 'GET_ACTIVE_PRESET':
-      return getActivePreset();
 
     case 'GET_MCP_SERVERS': {
       const options = message.payload as { includeSecrets?: boolean } | undefined;
@@ -450,7 +440,7 @@ async function handleMessage(
       await webdavMkcol(config);
 
       const [localMemories, allSkills, localPresets] = await Promise.all([
-        getAllMemories(),
+        getAllMemories(true), // 含归档：避免软删除条目被远端旧副本复活
         getAllSkills(),
         getAllPresets(),
       ]);
@@ -571,15 +561,14 @@ async function broadcastToTabs(payload: Record<string, unknown>, excludeTabId?: 
 }
 
 async function broadcastStateUpdate(excludeTabId?: number) {
-  const [memories, skills, presets, activePreset, modelType, toolDescriptors] = await Promise.all([
+  const [memories, skills, presets, modelType, toolDescriptors] = await Promise.all([
     getAllMemories(),
     getAllSkills(),
     getAllPresets(),
-    getActivePreset(),
     getModelType(),
     getRuntimeToolDescriptors(),
   ]);
-  const payload = { type: 'STATE_UPDATED', memories, skills, presets, activePreset, modelType, toolDescriptors };
+  const payload = { type: 'STATE_UPDATED', memories, skills, presets, modelType, toolDescriptors };
   await broadcastToTabs(payload, excludeTabId);
   // Also notify extension pages (sidepanel, popup) via runtime messaging
   chrome.runtime.sendMessage(payload).catch(() => {});

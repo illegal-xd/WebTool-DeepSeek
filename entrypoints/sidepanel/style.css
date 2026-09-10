@@ -106,11 +106,80 @@ input::placeholder, textarea::placeholder {
   box-shadow: 0 0 0 3px var(--ds-blue-glow);
 }
 
-/* Input / textarea */
+/* Input / textarea / select —— 统一交互状态：hover 描边、focus 光环、禁用态 */
 .ds-input {
   background: var(--ds-surface);
   border: 1px solid var(--ds-border);
   color: var(--ds-text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.ds-input:hover:not(:disabled):not(:focus) {
+  border-color: var(--ds-border-hover);
+}
+.ds-input:focus,
+.ds-input:focus-visible {
+  outline: none;
+  border-color: var(--ds-blue);
+  box-shadow: 0 0 0 3px var(--ds-blue-glow);
+}
+.ds-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 自定义下拉选择（components/ui/Select.tsx）—— 触发器复用 .ds-input 状态语言，此处负责箭头/面板/选项 */
+.ds-select-chevron {
+  flex-shrink: 0;
+  color: var(--ds-text-tertiary);
+  transition: transform 0.18s ease, color 0.15s ease;
+}
+.ds-select-chevron[data-open] {
+  transform: rotate(180deg);
+  color: var(--ds-blue);
+}
+.ds-select-placeholder {
+  color: var(--ds-text-tertiary);
+}
+.ds-select-panel {
+  background: var(--ds-bg);
+  border: 1px solid var(--ds-border);
+  border-radius: 12px;
+  box-shadow: var(--ds-shadow-lg);
+  padding: 4px;
+  animation: ds-select-in 0.16s ease-out;
+}
+@keyframes ds-select-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ds-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.25;
+  color: var(--ds-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.ds-select-option[data-active] {
+  background: var(--ds-surface);
+}
+.ds-select-option[aria-selected='true'] {
+  color: var(--ds-blue);
+  font-weight: 500;
+}
+.ds-select-check {
+  flex-shrink: 0;
+  color: var(--ds-blue);
 }
 
 /* Surface panel */
@@ -119,7 +188,35 @@ input::placeholder, textarea::placeholder {
   border: 1px solid var(--ds-border);
 }
 
-/* Buttons */
+/* Buttons —— 统一过渡 / 按压 / 禁用 / 键盘可见焦点 */
+.ds-btn-primary,
+.ds-btn-secondary,
+.ds-btn-cancel,
+.ds-btn-danger {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.08s ease;
+}
+.ds-btn-primary:focus-visible,
+.ds-btn-secondary:focus-visible,
+.ds-btn-cancel:focus-visible,
+.ds-btn-danger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ds-blue-glow);
+}
+.ds-btn-primary:active:not(:disabled),
+.ds-btn-secondary:active:not(:disabled),
+.ds-btn-cancel:active:not(:disabled),
+.ds-btn-danger:active:not(:disabled) {
+  transform: translateY(0.5px) scale(0.995);
+}
+.ds-btn-primary:disabled,
+.ds-btn-secondary:disabled,
+.ds-btn-cancel:disabled,
+.ds-btn-danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .ds-btn-primary {
   background: var(--ds-blue);
   box-shadow: var(--ds-blue-shadow);
@@ -231,4 +328,63 @@ input::placeholder, textarea::placeholder {
 .ds-info-panel {
   background: var(--ds-blue-light);
   border: 1px solid var(--ds-status-info-border);
+}
+
+/* ─── 加载态：骨架屏 + 旋转指示器（配色沿用主题变量，不引入新色值） ─── */
+
+@keyframes ds-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.ds-skeleton {
+  border-radius: 6px;
+  background-image: linear-gradient(
+    90deg,
+    var(--ds-surface) 25%,
+    color-mix(in srgb, var(--ds-surface) 55%, var(--ds-bg)) 37%,
+    var(--ds-surface) 63%
+  );
+  background-size: 400% 100%;
+  animation: ds-shimmer 1.4s ease infinite;
+}
+
+@keyframes ds-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ds-spin {
+  animation: ds-spin 0.8s linear infinite;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+}
+
+/* 列表项进入动画（骨架 → 内容切换更顺滑） */
+@keyframes ds-list-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ds-list-in {
+  animation: ds-list-in 0.18s ease both;
+}
+
+/* 尊重系统「减少动态效果」设置 */
+@media (prefers-reduced-motion: reduce) {
+  .ds-skeleton,
+  .ds-spin,
+  .ds-list-in,
+  .ds-select-panel {
+    animation: none;
+  }
+  .ds-input,
+  .ds-select-chevron,
+  .ds-btn-primary,
+  .ds-btn-secondary,
+  .ds-btn-cancel,
+  .ds-btn-danger,
+  .ds-card {
+    transition: none;
+  }
 }

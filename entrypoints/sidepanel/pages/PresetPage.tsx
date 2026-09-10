@@ -4,22 +4,24 @@ import { sortPresetsByWeight } from '../../../core/weighting';
 import PresetCard from '../components/PresetCard';
 import PresetForm from '../components/PresetForm';
 import SidepanelModal from '../components/SidepanelModal';
+import Skeleton from '../components/ui/Skeleton';
 
 export default function PresetPage() {
   const [presets, setPresets] = useState<SystemPromptPreset[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<SystemPromptPreset | undefined>();
   const [isFormWide, setIsFormWide] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
-    const [list, active] = await Promise.all([
-      chrome.runtime.sendMessage({ type: 'GET_PRESETS' }),
-      chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }),
-    ]);
-    setPresets(list ?? []);
-    setActiveId((active as SystemPromptPreset | null)?.id ?? null);
+    setLoading(true);
+    try {
+      const list: SystemPromptPreset[] = await chrome.runtime.sendMessage({ type: 'GET_PRESETS' });
+      setPresets(list ?? []);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -33,8 +35,7 @@ export default function PresetPage() {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [load]);
 
-  const handleSave = async (preset: SystemPromptPreset) => {
-    await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
+  const handleSave = async (preset: SystemPromptPreset) => {    await chrome.runtime.sendMessage({ type: 'SAVE_PRESET', payload: preset });
     setShowForm(false);
     setEditing(undefined);
     setIsFormWide(false);
@@ -73,18 +74,6 @@ export default function PresetPage() {
       setIsFormWide(false);
     }
     await chrome.runtime.sendMessage({ type: 'DELETE_PRESET', payload: { id } });
-    load();
-  };
-
-  const handleActivate = async (id: string) => {
-    await chrome.runtime.sendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
-    setActiveId(id);
-    load();
-  };
-
-  const handleDeactivate = async () => {
-    await chrome.runtime.sendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id: null } });
-    setActiveId(null);
     load();
   };
 
@@ -154,32 +143,25 @@ export default function PresetPage() {
         />
       </SidepanelModal>
 
-      <div className="space-y-2">
-        {sortPresetsByWeight(presets).map((p) => (
-          <PresetCard
-            key={p.id}
-            preset={p}
-            isActive={p.id === activeId}
-            onActivate={() => handleActivate(p.id)}
-            onDeactivate={handleDeactivate}
-            onEdit={() => handleEdit(p)}
-            onDelete={() => handleDelete(p.id)}
-          />
-        ))}
+      <div className="ds-list-in space-y-2">
+        {loading ? (
+          <Skeleton lines={3} />
+        ) : (
+          sortPresetsByWeight(presets).map((p) => (
+            <PresetCard
+              key={p.id}
+              preset={p}
+              onEdit={() => handleEdit(p)}
+              onDelete={() => handleDelete(p.id)}
+            />
+          ))
+        )}
       </div>
 
       {presets.length === 0 && !showForm && (
         <div className="ds-info-panel rounded-xl p-3.5">
           <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
-            创建系统提示词预设后，选中即可在每次新对话的第一条消息前自动注入，无需手动触发。
-          </p>
-        </div>
-      )}
-
-      {presets.length > 0 && (
-        <div className="ds-info-panel rounded-xl p-3.5">
-          <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
-            启用一个预设后，每次新对话的首条消息会自动注入该提示词。同一时间只能激活一个预设。
+            创建系统提示词预设后，在输入框用 <span className="font-medium">@预设名</span> 引用即可生效，随用随选、不保留启用状态。
           </p>
         </div>
       )}
@@ -188,13 +170,13 @@ export default function PresetPage() {
         <p className="text-xs leading-relaxed" style={{ color: 'var(--ds-text-secondary)' }}>
           在 DeepSeek 输入框中输入{' '}
           <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
+            @
+          </code>{' '}
+          唤起预设列表：选中后会在输入框内显示{' '}
+          <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
             @预设名
           </code>{' '}
-          快速切换预设。输入{' '}
-          <code className="ds-code font-mono text-[11px] px-1.5 py-0.5 rounded">
-            @close
-          </code>{' '}
-          关闭当前预设。
+          文案，该预设<span className="font-medium">仅对这一条消息生效</span>（发送时自动识别并剥离，无需手动删除）。
         </p>
       </div>
     </div>

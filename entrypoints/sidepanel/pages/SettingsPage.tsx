@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../../../config.js';
+import { MEMORY_TOKEN_BUDGET } from '../../../core/constants';
 import { DEFAULT_CUSTOM_MEMORY_PROMPT, type MemoryConfig } from '../../../core/memory/config';
 import { clearExpiredToolExecutionCache } from '../../../core/tool/cache';
 import { getFeatureVisibility, setFeatureVisibility, subscribeFeatureVisibility, type FeatureVisibility } from '../feature-visibility';
@@ -108,7 +109,7 @@ export default function SettingsPage() {
   const [syncMessage, setSyncMessage] = useState('');
   const [backupSelection, setBackupSelection] = useState<BackupSelection>(DEFAULT_BACKUP_SELECTION);
   const [expertMode, setExpertMode] = useState(false);
-  const [memoryTokenBudget, setMemoryTokenBudget] = useState(3000);
+  const [memoryTokenBudget, setMemoryTokenBudget] = useState(MEMORY_TOKEN_BUDGET);
   const [singleMemoryInjection, setSingleMemoryInjection] = useState(false);
   const [customMemoryEnabled, setCustomMemoryEnabled] = useState(false);
   const [customMemoryPrompt, setCustomMemoryPrompt] = useState(DEFAULT_CUSTOM_MEMORY_PROMPT);
@@ -125,7 +126,7 @@ export default function SettingsPage() {
   const hasBackupSelection = Object.values(backupSelection).some(Boolean);
 
   const loadCounts = async () => {
-    const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
+    const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES', payload: { includeArchived: true } });
     setMemoryCount(memories?.length ?? 0);
 
     const skills: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
@@ -374,7 +375,7 @@ export default function SettingsPage() {
     };
 
     if (backupSelection.memories) {
-      exportData.memories = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
+      exportData.memories = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES', payload: { includeArchived: true } });
     }
     if (backupSelection.skills) {
       const skills: Skill[] = await chrome.runtime.sendMessage({ type: 'GET_SKILLS' });
@@ -463,8 +464,8 @@ export default function SettingsPage() {
   const handleClearAll = async () => {
     if (!confirm('确定要清除所有数据（记忆、自定义 Skill、系统预设）吗？此操作不可撤销。')) return;
     
-    // Clear memories
-    const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
+    // Clear memories（含归档条目：用户明确执行“清除所有数据”）
+    const memories: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES', payload: { includeArchived: true } });
     for (const mem of memories) {
       if (mem.id !== undefined) {
         await chrome.runtime.sendMessage({ type: 'DELETE_MEMORY', payload: { id: mem.id } });

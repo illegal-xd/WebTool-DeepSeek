@@ -101,7 +101,6 @@ async function saveMemory(runtime: MemoryToolRuntime, call: ToolCall): Promise<T
     scope: memoryScopeValue(payload.scope) || 'contextual',
     name,
     content: stringValue(payload.content),
-    description: name,
     tags: stringArrayValue(payload.tags),
     pinned: false,
   });
@@ -121,7 +120,6 @@ async function updateExistingMemory(runtime: MemoryToolRuntime, call: ToolCall):
     scope: memoryScopeValue(call.payload.scope) || existing.scope,
     name,
     content: stringValue(call.payload.content) || existing.content,
-    description: name || existing.description,
     tags: Array.isArray(call.payload.tags) ? stringArrayValue(call.payload.tags) : existing.tags,
   });
   return success(call, '已更新', name);

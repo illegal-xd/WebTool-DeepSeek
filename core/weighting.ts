@@ -5,7 +5,7 @@ export const DEFAULT_USAGE_STATS: UsageStats = {
   lastUsedAt: null,
 };
 
-const MEMORY_SCOPE_BASE: Record<MemoryScope, number> = {
+export const MEMORY_SCOPE_BASE: Record<MemoryScope, number> = {
   permanent: 300,
   contextual: 180,
   temporary: 80,
@@ -53,14 +53,12 @@ export function memoryRecencyScore(lastAccessedAt: number, now = Date.now()): nu
 
 export function memoryWeight(memory: Memory, keywordScore = 0, now = Date.now()): number {
   const scope = normalizeMemoryScope(memory);
-  const expiresPenalty = memory.expiresAt && memory.expiresAt < now ? 500 : 0;
   return (
     MEMORY_SCOPE_BASE[scope] +
     (memory.pinned ? 1000 : 0) +
     memoryUsageScore(memory.accessCount) +
     memoryRecencyScore(memory.lastAccessedAt, now) +
-    keywordScore -
-    expiresPenalty
+    keywordScore
   );
 }
 
@@ -73,6 +71,25 @@ export function queryMatchScore(name: string, description: string, query: string
   if (n.startsWith(q)) return 600;
   if (n.includes(q)) return 300;
   if (d.includes(q)) return 120;
+  return 0;
+}
+
+/**
+ * 记忆检索打分（# 弹窗与侧边栏搜索共用，替代此前的两套实现）。
+ * 命中优先级：名称精确 > ID 精确 > 名称前缀 > 名称包含 > 标签包含。
+ */
+export function memoryMatchScore(
+  memory: Pick<Memory, 'id' | 'name' | 'tags'>,
+  query: string,
+): number {
+  const q = query.trim().toLowerCase();
+  if (!q) return 0;
+  const name = memory.name.toLowerCase();
+  if (name === q) return 1000;
+  if (memory.id != null && String(memory.id) === q) return 900;
+  if (name.startsWith(q)) return 600;
+  if (name.includes(q)) return 300;
+  if (memory.tags.some((tag) => tag.toLowerCase().includes(q))) return 180;
   return 0;
 }
 

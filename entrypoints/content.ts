@@ -115,17 +115,16 @@ async function safeStorageLocalSet(data: Record<string, unknown>): Promise<void>
 
 /** 一次性拉取注入相关全部状态（记忆/技能/预设/模型/工具/记忆配置/模板覆盖）。 */
 async function fetchAllState() {
-  const [memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig, templateOverrides] = await Promise.all([
+  const [memories, skills, presets, modelType, toolDescriptors, memoryConfig, templateOverrides] = await Promise.all([
     safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
     safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
     safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
-    safeRuntimeSendMessage<SystemPromptPreset | null>({ type: 'GET_ACTIVE_PRESET' }),
     safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
     safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
     safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }),
     safeRuntimeSendMessage<TemplateOverrides>({ type: 'GET_TEMPLATE_OVERRIDES' }),
   ]);
-  return { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig, templateOverrides };
+  return { memories, skills, presets, modelType, toolDescriptors, memoryConfig, templateOverrides };
 }
 
 export default defineContentScript({
@@ -138,10 +137,18 @@ export default defineContentScript({
     });
 
     const state = await fetchAllState();
-    const { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig, templateOverrides } = state;
+    const { memories, skills, presets, modelType, toolDescriptors, memoryConfig, templateOverrides } = state;
 
     currentToolDescriptors = toolDescriptors ?? [];
-    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors, memoryConfig ?? undefined, templateOverrides ?? undefined);
+    syncToMainWorld({
+      memories: memories ?? [],
+      skills: skills ?? [],
+      presets: presets ?? [],
+      modelType,
+      toolDescriptors: currentToolDescriptors,
+      memoryConfig: memoryConfig ?? undefined,
+      templateOverrides: templateOverrides ?? undefined,
+    });
     markRouteRestoreWindow();
     restorePersistedToolBlocks();
 
@@ -222,24 +229,6 @@ export default defineContentScript({
           }, 2500);
           break;
         }
-        case 'SET_ACTIVE_PRESET': {
-          const id = event.data.id as string | null;
-          await safeRuntimeSendMessage({ type: 'SET_ACTIVE_PRESET', payload: { id } });
-          const state = await fetchAllState();
-          currentToolDescriptors = state.toolDescriptors ?? [];
-          syncToMainWorld(
-            state.memories ?? [],
-            state.skills ?? [],
-            state.presets ?? [],
-            state.activePreset,
-            state.modelType,
-            currentToolDescriptors,
-            state.memoryConfig ?? undefined,
-            state.templateOverrides ?? undefined,
-          );
-          cleanRenderedToolCalls();
-          break;
-        }
         case 'INJECTION_EVENT': {
           const injectionEvent = event.data.data as InjectionEvent;
           await safeRuntimeSendMessage({ type: 'RECORD_INJECTION_EVENT', payload: injectionEvent });
@@ -269,7 +258,13 @@ export default defineContentScript({
     safeRuntimeOnMessage((message) => {
       if (message.type === 'STATE_UPDATED') {
         currentToolDescriptors = message.toolDescriptors ?? [];
-        syncToMainWorld(message.memories, message.skills, message.presets ?? [], message.activePreset, message.modelType, currentToolDescriptors);
+        syncToMainWorld({
+          memories: message.memories,
+          skills: message.skills,
+          presets: message.presets ?? [],
+          modelType: message.modelType,
+          toolDescriptors: currentToolDescriptors,
+        });
         // Also refresh memory config in case it was changed
         safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
           if (cfg) {
@@ -333,28 +328,22 @@ async function handleConversationRequest(message: { type?: string; payload?: unk
   }
 }
 
-function syncToMainWorld(
-  memories: Memory[],
-  skills: Skill[],
-  presets: SystemPromptPreset[],
-  activePreset: SystemPromptPreset | null,
-  modelType: ModelType,
-  toolDescriptors: ToolDescriptor[],
-  memoryConfig?: MemoryConfig,
-  templateOverrides?: TemplateOverrides,
-) {
+interface MainWorldSyncPayload {
+  memories: Memory[];
+  skills: Skill[];
+  presets: SystemPromptPreset[];
+  modelType: ModelType;
+  toolDescriptors: ToolDescriptor[];
+  memoryConfig?: MemoryConfig;
+  templateOverrides?: TemplateOverrides;
+}
+
+function syncToMainWorld(payload: MainWorldSyncPayload) {
   window.postMessage({
     source: 'WebTool-DeepSeek-content',
     type: 'SYNC_STATE',
-    memories,
-    skills,
-    presets,
-    activePreset,
-    modelType,
-    toolDescriptors,
-    memoryTokenBudget: memoryConfig?.tokenBudget,
-    memoryConfig,
-    templateOverrides,
+    ...payload,
+    memoryTokenBudget: payload.memoryConfig?.tokenBudget,
   });
 }
 

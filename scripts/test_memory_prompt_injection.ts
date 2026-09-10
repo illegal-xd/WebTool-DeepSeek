@@ -38,7 +38,6 @@ test('injects the memory context section when selected memories exist', () => {
     scope: 'permanent',
     name: '回答偏好',
     content: '偏好简洁回答',
-    description: '回答偏好',
     tags: ['偏好'],
     pinned: true,
     accessCount: 1,

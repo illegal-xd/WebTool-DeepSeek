@@ -1,6 +1,6 @@
 import type { Memory } from '../types';
-import { memoryWeight } from '../weighting';
-import { SLIDE_UP_KEYFRAMES, injectStyleElement } from './popup-common';
+import { memoryMatchScore, memoryWeight } from '../weighting';
+import { injectStyleElement, popupChromeCss, setNativeTextareaValue } from './popup-common';
 
 let popupEl: HTMLElement | null = null;
 let memories: Memory[] = [];
@@ -62,20 +62,9 @@ function onInput() {
   hidePopup();
 }
 
-function memoryPopupMatchScore(memory: Memory, query: string): number {
-  if (!query) return 0;
-  const name = memory.name.toLowerCase();
-  if (name === query) return 1000;
-  if (name.startsWith(query)) return 600;
-  if (name.includes(query)) return 300;
-  if (memory.tags.some((tag) => tag.toLowerCase().includes(query))) return 180;
-  if (memory.id != null && memory.id.toString() === query) return 900;
-  return 0;
-}
-
 function sortMemoriesForPopup(items: Memory[], query = ''): Memory[] {
   return [...items].sort((a, b) => (
-    memoryWeight(b, memoryPopupMatchScore(b, query)) - memoryWeight(a, memoryPopupMatchScore(a, query)) ||
+    memoryWeight(b, memoryMatchScore(b, query)) - memoryWeight(a, memoryMatchScore(a, query)) ||
     b.lastAccessedAt - a.lastAccessedAt ||
     a.name.localeCompare(b.name)
   ));
@@ -121,24 +110,7 @@ function onClickOutside(e: MouseEvent) {
 function selectMemory(memory: Memory) {
   if (!textarea || !memory) return;
 
-  const newVal = `#${memory.name} `;
-
-  // Invalidate React's value tracker so it detects the change
-  const tracker = (textarea as any)._valueTracker;
-  if (tracker) tracker.setValue('');
-
-  const nativeSetter = Object.getOwnPropertyDescriptor(
-    HTMLTextAreaElement.prototype, 'value',
-  )?.set;
-  if (nativeSetter) {
-    nativeSetter.call(textarea, newVal);
-  } else {
-    textarea.value = newVal;
-  }
-
-  textarea.dispatchEvent(new Event('input', { bubbles: true }));
-  textarea.focus();
-  textarea.setSelectionRange(newVal.length, newVal.length);
+  setNativeTextareaValue(textarea, `#${memory.name} `, '');
   hidePopup();
 }
 
@@ -224,32 +196,7 @@ function isVisible() {
 
 function injectStyles() {
   injectStyleElement('dpp-memory-popup-css', `
-.dpp-memory-popup {
-  position: fixed;
-  z-index: 99999;
-  background: var(--dpp-prompt-bg, #FFFFFF);
-  border: 1px solid var(--dpp-prompt-border, #E5E7EB);
-  border-radius: 12px;
-  padding: 4px;
-  box-shadow: var(--dpp-prompt-shadow, 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04));
-  display: none;
-  animation: dpp-slide-up .15s ease;
-  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
-  backdrop-filter: blur(8px);
-  max-height: 220px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-${SLIDE_UP_KEYFRAMES}
-.dpp-memory-item {
-  padding: 8px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background .1s;
-}
-.dpp-memory-item.dpp-active {
-  background: var(--dpp-memory-bg, #F5F3FF);
-}
+${popupChromeCss('memory', 'var(--dpp-memory-bg, #F5F3FF)')}
 .dpp-memory-head {
   display: flex;
   align-items: center;

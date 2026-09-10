@@ -35,7 +35,6 @@ export function resolveTemplate(name: keyof TemplateOverrides, fallback: string)
 
 export interface AugmentOptions {
   thinkingEnabled?: boolean;
-  identityOnly?: boolean;
   toolDescriptors?: readonly ToolDescriptor[];
   tokenBudget?: number;
   instructionBlock?: string;
@@ -59,12 +58,12 @@ export function buildAugmentedPrompt(
   allMemories: Memory[],
   options?: AugmentOptions,
 ): { augmented: string; usedMemoryIds: number[] } {
-  const { thinkingEnabled = false, identityOnly = false, toolDescriptors = DEFAULT_TOOL_DESCRIPTORS, tokenBudget, instructionBlock, presetRelatedMemoryIds } = options ?? {};
+  const { thinkingEnabled = false, toolDescriptors = DEFAULT_TOOL_DESCRIPTORS, tokenBudget, instructionBlock, presetRelatedMemoryIds } = options ?? {};
 
   const promptTokens = estimateTokens(originalPrompt);
   const budget = getMemoryBudget(promptTokens, tokenBudget);
 
-  const selected = selectMemories(originalPrompt, allMemories, { budget, identityOnly });
+  const selected = selectMemories(originalPrompt, allMemories, { budget });
   const memBlock = formatMemoriesBlock(selected);
   const relatedBlock = renderPresetRelatedBlock(selected, presetRelatedMemoryIds);
 
@@ -145,7 +144,7 @@ export function buildLightweightMemoryPrompt(
 ): { augmented: string; usedMemoryIds: number[] } {
   const promptTokens = estimateTokens(originalPrompt);
   const budget = getMemoryBudget(promptTokens, options?.tokenBudget);
-  const selected = selectMemories(originalPrompt, memories, { budget, identityOnly: false });
+  const selected = selectMemories(originalPrompt, memories, { budget });
   const fresh = options?.excludeMemoryIds
     ? selected.filter((m) => m.id == null || !options.excludeMemoryIds!.has(m.id))
     : selected;

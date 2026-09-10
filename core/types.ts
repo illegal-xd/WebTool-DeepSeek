@@ -66,14 +66,14 @@ export interface Memory {
   scope: MemoryScope;
   name: string;
   content: string;
-  description: string;
   tags: string[];
   pinned: boolean;
   createdAt: number;
   updatedAt: number;
   accessCount: number;
   lastAccessedAt: number;
-  expiresAt?: number;
+  /** 软删除标记：非空表示已归档（不参与注入/列表，但保留在库、导出与同步中）。 */
+  archivedAt?: number;
 }
 
 export interface SyncConfig {
@@ -129,12 +129,10 @@ export type NewMemory = {
   type: MemoryType;
   name: string;
   content: string;
-  description: string;
   tags: string[];
   pinned: boolean;
   syncId?: string;
   scope?: MemoryScope;
-  expiresAt?: number;
 };
 
 export interface SystemPromptPreset {
@@ -202,18 +200,17 @@ export type MessageAction =
   | { type: 'GET_SKILLS' }
   | { type: 'SAVE_MEMORY'; payload: NewMemory }
   | { type: 'DELETE_MEMORY'; payload: { id: number } }
+  | { type: 'RESTORE_MEMORY'; payload: { id: number } }
   | { type: 'UPDATE_MEMORY'; payload: Memory }
   | { type: 'SAVE_SKILL'; payload: Skill }
   | { type: 'DELETE_SKILL'; payload: { name: string } }
   | { type: 'GET_PRESETS' }
   | { type: 'SAVE_PRESET'; payload: SystemPromptPreset }
   | { type: 'DELETE_PRESET'; payload: { id: string } }
-  | { type: 'SET_ACTIVE_PRESET'; payload: { id: string | null } }
-  | { type: 'GET_ACTIVE_PRESET' }
   | { type: 'GET_CONFIG' }
   | { type: 'GET_MODEL_TYPE' }
   | { type: 'SET_MODEL_TYPE'; payload: ModelType }
-  | { type: 'TOUCH_USAGE'; payload: { kind: 'memory'; id: number } | { kind: 'skill'; name: string } | { kind: 'preset'; id: string } }
+  | { type: 'TOUCH_USAGE'; payload: { kind: 'memory'; id: number } | { kind: 'skill'; name: string } }
   | { type: 'TOOL_CALL_EXECUTED'; payload: ToolCall }
   | { type: 'GET_MCP_SERVERS'; payload?: { includeSecrets?: boolean } }
   | { type: 'GET_MCP_SERVER'; payload: { id: McpServerId } }

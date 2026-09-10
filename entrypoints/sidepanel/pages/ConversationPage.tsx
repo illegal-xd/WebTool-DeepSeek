@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ConversationCategory, ConversationExportFormat, ConversationMessage, ConversationSession } from '../../../core/types';
+import Spinner from '../components/ui/Spinner';
 import { SVG_PATHS } from '../constants';
 
 type FilterKey = 'all' | 'uncategorized' | string;
@@ -302,7 +303,12 @@ export default function ConversationPage() {
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>对话管理</h2>
           <button type="button" onClick={() => load({ forceRefresh: true })} disabled={loading} className="ds-btn-secondary px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 disabled:opacity-40">
-            {loading ? '加载中' : '刷新'}
+            {loading ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Spinner size={11} />
+                加载中
+              </span>
+            ) : '刷新'}
           </button>
         </div>
         <input

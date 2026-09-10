@@ -25,7 +25,10 @@ export function memoryPresetOverlap(memory: Memory, preset: SystemPromptPreset):
   return Math.max(coverage, jaccard);
 }
 
-/** 将文本分词为关键词集合（复刻 selector 的分词策略）。 */
+/**
+ * 将文本分词为关键词集合。注意：这里与 selector.segmentText 的契约不同——使用 2-3 字滑窗 + 英文词，
+ * 不依赖 Intl.Segmenter、不过滤停用词：重合度计算看重「字面贴合」，属有意与注入选择的分词策略分离。
+ */
 function tokenize(text: string): Set<string> {
   const lower = text.toLowerCase();
   const words = new Set<string>();

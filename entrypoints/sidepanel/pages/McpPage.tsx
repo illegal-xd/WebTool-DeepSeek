@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { McpServerConfig, McpServerCreateInput, McpToolCacheEntry, ToolCallHistoryRecord, ToolExecutionMode } from '../../../core/types';
 import SidepanelModal from '../components/SidepanelModal';
+import Select, { type SelectOption } from '../components/ui/Select';
+import Spinner from '../components/ui/Spinner';
 
 type TransportKind = McpServerCreateInput['transport']['kind'];
 
@@ -32,6 +34,12 @@ const TRANSPORTS: Array<{ kind: TransportKind; label: string }> = [
   { kind: 'sse', label: 'SSE 事件流' },
   { kind: 'stdio_bridge', label: '标准输入输出桥接' },
   { kind: 'native_messaging', label: '原生消息主机' },
+];
+
+const EXECUTION_MODE_OPTIONS: SelectOption<ToolExecutionMode>[] = [
+  { value: 'auto', label: '自动' },
+  { value: 'manual', label: '手动' },
+  { value: 'disabled', label: '禁用' },
 ];
 
 const STATUS_LABELS: Record<McpServerConfig['status'] | 'disabled', string> = {
@@ -247,20 +255,28 @@ export default function McpPage() {
                   名称
                   <input className="ds-input mt-1 w-full rounded-xl px-3 py-2 text-[13px]" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} placeholder="例如：本地文件工具" />
                 </label>
-                <label className="text-[12px]" style={{ color: 'var(--ds-text-secondary)' }}>
+                <div className="text-[12px]" style={{ color: 'var(--ds-text-secondary)' }}>
                   传输
-                  <select className="ds-input mt-1 w-full rounded-xl px-3 py-2 text-[13px]" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as TransportKind })}>
-                    {TRANSPORTS.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}
-                  </select>
-                </label>
-                <label className="text-[12px]" style={{ color: 'var(--ds-text-secondary)' }}>
+                  <Select
+                    className="mt-1"
+                    value={form.kind}
+                    options={TRANSPORTS.map((item) => ({ value: item.kind, label: item.label }))}
+                    onChange={(kind) => setForm({ ...form, kind })}
+                    triggerClassName="rounded-xl px-3 py-2 text-[13px]"
+                    ariaLabel="传输"
+                  />
+                </div>
+                <div className="text-[12px]" style={{ color: 'var(--ds-text-secondary)' }}>
                   执行策略
-                  <select className="ds-input mt-1 w-full rounded-xl px-3 py-2 text-[13px]" value={form.executionMode} onChange={(e) => setForm({ ...form, executionMode: e.target.value as ToolExecutionMode })}>
-                    <option value="auto">自动</option>
-                    <option value="manual">手动</option>
-                    <option value="disabled">禁用</option>
-                  </select>
-                </label>
+                  <Select
+                    className="mt-1"
+                    value={form.executionMode}
+                    options={EXECUTION_MODE_OPTIONS}
+                    onChange={(executionMode) => setForm({ ...form, executionMode })}
+                    triggerClassName="rounded-xl px-3 py-2 text-[13px]"
+                    ariaLabel="执行策略"
+                  />
+                </div>
                 <label className="text-[12px] col-span-2" style={{ color: 'var(--ds-text-secondary)' }}>
                   URL / Bridge 地址
                   <input className="ds-input mt-1 w-full rounded-xl px-3 py-2 text-[13px]" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="http://localhost:3000/mcp" />
@@ -293,17 +309,16 @@ export default function McpPage() {
         {/* 服务选择器 */}
         <div className="flex items-center gap-2">
           <span className="text-[12px] shrink-0" style={{ color: 'var(--ds-text-secondary)' }}>服务</span>
-          <select
-            aria-label="选择 MCP 服务"
-            className="ds-input flex-1 rounded-xl px-3 py-2 text-[13px] min-w-0"
-            value={selected?.id ?? ''}
-            onChange={(e) => setSelectedId(e.target.value || null)}
+          <Select
+            className="flex-1 min-w-0"
+            value={selected?.id ?? null}
+            options={servers.map((server) => ({ value: server.id, label: server.displayName }))}
+            onChange={(id) => setSelectedId(id || null)}
+            placeholder={servers.length === 0 ? '暂无服务' : '选择服务'}
             disabled={servers.length === 0}
-          >
-            {servers.map((server) => (
-              <option key={server.id} value={server.id}>{server.displayName}</option>
-            ))}
-          </select>
+            triggerClassName="rounded-xl px-3 py-2 text-[13px]"
+            ariaLabel="选择 MCP 服务"
+          />
           <button type="button" className="ds-btn-secondary rounded-lg px-2.5 py-2 text-[11px] shrink-0" onClick={() => void refresh(selected!)} disabled={!selected || busyId === selected.id}>刷新</button>
           <button type="button" className="ds-btn-secondary rounded-lg px-2.5 py-2 text-[11px] shrink-0" onClick={() => void refresh(selected!, true)} disabled={!selected || busyId === selected.id}>测试</button>
         </div>
@@ -336,7 +351,10 @@ export default function McpPage() {
             </div>
 
             {busyId === selected.id && (
-              <div className="text-[11px] text-[var(--ds-text-tertiary)]">正在刷新工具清单…</div>
+              <div className="flex items-center gap-1.5 text-[11px] text-[var(--ds-text-tertiary)]">
+                <Spinner size={12} />
+                <span>正在刷新工具清单…</span>
+              </div>
             )}
 
             <CollapsibleSection

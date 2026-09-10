@@ -1,5 +1,6 @@
-import { DEEPSEEK_API_URL } from '../constants';
+import { DEEPSEEK_API_URL, MEMORY_TOKEN_BUDGET } from '../constants';
 import { INSTRUCTION_SEPARATOR, MEMORY_BACKGROUND_TEMPLATE } from '../templates';
+import { resolvePresetMention } from '../preset/mention';
 import { TEMPLATE_KEYS, type TemplateOverrides } from '../templates/overrides';
 import { createInjectionEvent, type InjectionEvent, type InjectionKind } from '../inject/events';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, hasXmlToolMarker } from '../tool';
@@ -27,7 +28,7 @@ interface SessionInjectionRecord {
 interface HookState {
   memories: Memory[];
   skills: Skill[];
-  activePreset: SystemPromptPreset | null;
+  presets: SystemPromptPreset[];
   modelType: ModelType;
   toolDescriptors: ToolDescriptor[];
   recognizedToolTags: string[];
@@ -54,11 +55,11 @@ interface HookState {
 let hookState: HookState = {
   memories: [],
   skills: [],
-  activePreset: null,
+  presets: [],
   modelType: null,
   toolDescriptors: [],
   recognizedToolTags: [...DEFAULT_RECOGNIZED_TOOL_TAGS],
-  memoryTokenBudget: 3000,
+  memoryTokenBudget: MEMORY_TOKEN_BUDGET,
   singleMemoryInjection: false,
   customMemoryEnabled: false,
   customMemoryPrompt: '',
@@ -136,7 +137,7 @@ function getOrCreateSessionRecord(sessionId: string): SessionInjectionRecord {
 }
 
 function shouldUseSingleMemoryInjection(): boolean {
-  return hookState.singleMemoryInjection && !hookState.activePreset;
+  return hookState.singleMemoryInjection;
 }
 
 function syncConcreteSingleInjectionSession(chatSessionId: string | null, hasConcreteParentMessage: boolean) {
@@ -296,7 +297,48 @@ function isChatCompletionURL(url: string): boolean {
   return url.includes(API_PATH);
 }
 
-function modifyRequestBody(bodyStr: string): string | null {
+interface MemoryCommandContext {
+  memory: Memory;
+  args: string;
+  presetInstruction: string;
+  effectivePreset: SystemPromptPreset | null;
+  thinkingEnabled: boolean;
+}
+
+/** `#记忆名` 显式手动注入路径：记忆背景 + （可选）预设关联 + 用户正文。 */
+function applyMemoryCommand(body: Record<string, unknown>, context: MemoryCommandContext): string {
+  const { memory, args, presetInstruction, effectivePreset, thinkingEnabled } = context;
+
+  const memoryInstruction = wrapMemoryInput(memory.name, memory.content, '');
+  // 记忆内容与当前预设高度重合时，关联注入对应的预设指令。
+  const linkedPreset = findPresetForMemory(memory, effectivePreset ? [effectivePreset] : []);
+  const linkedInstruction = linkedPreset
+    ? `<关联预设：${linkedPreset.name}（记忆内容与该预设高度重合，请结合其指令回答）>\n\n${linkedPreset.content}`
+    : '';
+
+  const { augmented } = buildAugmentedPrompt(args, [], {
+    thinkingEnabled,
+    tokenBudget: hookState.memoryTokenBudget,
+    toolDescriptors: hookState.toolDescriptors,
+    instructionBlock: joinInstructionBlocks(presetInstruction, memoryInstruction, linkedInstruction),
+  });
+
+  body.prompt = augmented;
+  if (memory.id != null) {
+    hookState.onMemoriesUsed([memory.id]);
+  }
+  emitInjectionEvent(
+    'memory',
+    `记忆注入：${memory.name}`,
+    linkedPreset
+      ? `已关联预设「${linkedPreset.name}」`
+      : (hasMcpTools() ? '含 MCP 工具描述符' : undefined),
+    augmented,
+  );
+  return JSON.stringify(body);
+}
+
+export function modifyRequestBody(bodyStr: string): string | null {
   let body: Record<string, unknown>;
   try {
     body = JSON.parse(bodyStr);
@@ -304,8 +346,8 @@ function modifyRequestBody(bodyStr: string): string | null {
     return null;
   }
 
-  const originalPrompt = (body.prompt as string) || '';
-  if (!originalPrompt) return null;
+  const rawPrompt = (body.prompt as string) || '';
+  if (!rawPrompt) return null;
 
   // 自动续聊请求：用挂起的 continuation prompt 替换用户输入，跳过常规记忆/预设注入。
   if (hookState.pendingContinuationPrompt) {
@@ -313,6 +355,13 @@ function modifyRequestBody(bodyStr: string): string | null {
     hookState.pendingContinuationPrompt = null;
     return JSON.stringify(body);
   }
+
+  // 输入框开头的 `@预设名` 只对当条消息生效（与 /skill、#记忆 一致，不保留任何激活状态）：
+  // 命中则剥离 mention 并把该预设用于本条消息；未命中/纯 mention 则原样保留。
+  const mention = resolvePresetMention(rawPrompt, hookState.presets);
+  const originalPrompt = mention?.rest ?? rawPrompt;
+  const effectivePreset = mention?.preset ?? null;
+  const presetInstruction = effectivePreset?.content ?? '';
 
   const thinkingEnabled = body.thinking_enabled === true;
   const chatSessionId = typeof body.chat_session_id === 'string' ? body.chat_session_id : null;
@@ -323,8 +372,6 @@ function modifyRequestBody(bodyStr: string): string | null {
     hookState._lastChatSessionId = chatSessionId;
   }
 
-  const presetInstruction = getPresetInstruction();
-
   if (hookState.modelType) {
     body.model_type = hookState.modelType;
   }
@@ -332,26 +379,13 @@ function modifyRequestBody(bodyStr: string): string | null {
   const memInvocation = hookState.customMemoryEnabled ? null : parseMemoryCommand(originalPrompt, hookState.memories);
   // `#记忆名` 是显式手动注入路径，不参与普通自动记忆的单次去重。
   if (memInvocation) {
-    const { memory, args } = memInvocation;
-    const memoryInstruction = wrapMemoryInput(memory.name, memory.content, '');
-    // 记忆内容与活动预设高度重合时，关联注入对应的预设指令。
-    const linkedPreset = findPresetForMemory(memory, hookState.activePreset ? [hookState.activePreset] : []);
-    const linkedInstruction = linkedPreset
-      ? `<关联预设：${linkedPreset.name}（记忆内容与该预设高度重合，请结合其指令回答）>\n\n${linkedPreset.content}`
-      : '';
-    const { augmented } = buildAugmentedPrompt(args, [], {
+    return applyMemoryCommand(body, {
+      memory: memInvocation.memory,
+      args: memInvocation.args,
+      presetInstruction,
+      effectivePreset,
       thinkingEnabled,
-      tokenBudget: hookState.memoryTokenBudget,
-      toolDescriptors: hookState.toolDescriptors,
-      instructionBlock: joinInstructionBlocks(presetInstruction, memoryInstruction, linkedInstruction),
     });
-
-    body.prompt = augmented;
-    if (memory.id != null) {
-      hookState.onMemoriesUsed([memory.id]);
-    }
-    emitInjectionEvent('memory', `记忆注入：${memory.name}`, linkedPreset ? `已关联预设「${linkedPreset.name}」` : (hasMcpTools() ? '含 MCP 工具描述符' : undefined), augmented);
-    return JSON.stringify(body);
   }
 
   const invocation = parseSkillCommand(originalPrompt);
@@ -368,12 +402,12 @@ function modifyRequestBody(bodyStr: string): string | null {
       }
 
       const instructionBlock = joinInstructionBlocks(presetInstruction, resolved.instructions);
-      const useMemoryPrompt = shouldUseMemoryPromptForSkill(resolved);
+      const useMemoryPrompt = shouldUseMemoryPromptForSkill(resolved, effectivePreset);
       const { augmented, usedMemoryIds } = buildPromptForInstructionMode(
         resolved.userInput,
         instructionBlock,
         useMemoryPrompt,
-        useMemoryPrompt ? resolveTargetMemories(collectMemorySources(resolved)) : [],
+        useMemoryPrompt ? resolveTargetMemories(collectMemorySources(resolved, effectivePreset)) : [],
         thinkingEnabled,
       );
 
@@ -388,7 +422,6 @@ function modifyRequestBody(bodyStr: string): string | null {
   }
 
   let targetMemories = hookState.memories;
-  let identityOnly = false;
 
   if (hookState.customMemoryEnabled) {
     const { augmented } = buildCustomMemoryModePrompt(originalPrompt, presetInstruction);
@@ -414,32 +447,32 @@ function modifyRequestBody(bodyStr: string): string | null {
 
   const sessionRecord = getOrCreateSessionRecord(singleInjectionSessionId);
   const needSystemTemplate = !sessionRecord.systemTemplateInjected;
-  const currentPresetHash = presetContentHash(hookState.activePreset);
+  const currentPresetHash = presetContentHash(effectivePreset);
   const needPreset = Boolean(presetInstruction) && (!sessionRecord.presetInjected || sessionRecord.presetContentHash !== currentPresetHash);
 
   // 仅指令预设路径（无记忆）。
-  if (hookState.activePreset && !isPresetMemoryEnabled()) {
+  if (effectivePreset && !isPresetMemoryEnabled(effectivePreset)) {
     if (needPreset || needSystemTemplate) {
       const { augmented } = buildPromptForInstructionMode(originalPrompt, presetInstruction, false, [], thinkingEnabled);
       body.prompt = augmented;
       sessionRecord.presetInjected = true;
       sessionRecord.presetContentHash = currentPresetHash;
       markSingleInjectionSession(singleInjectionSessionId);
-      emitInjectionEvent('preset', `预设注入：${hookState.activePreset.name}`, '仅指令', augmented);
+      emitInjectionEvent('preset', `预设注入：${effectivePreset.name}`, '仅指令', augmented);
     } else {
       body.prompt = originalPrompt;
-      emitInjectionEvent('preset', `预设注入：${hookState.activePreset.name}`, '去重跳过', originalPrompt);
+      emitInjectionEvent('preset', `预设注入：${effectivePreset.name}`, '去重跳过', originalPrompt);
     }
     return JSON.stringify(body);
   }
 
   // 记忆 + 预设 + 系统模板路径（含 presetMemoryEnabled 与普通自动注入）。
-  if (hookState.activePreset && isPresetMemoryEnabled()) {
-    targetMemories = resolveActivePresetMemories();
+  if (effectivePreset && isPresetMemoryEnabled(effectivePreset)) {
+    targetMemories = resolvePresetMemories(effectivePreset);
   }
 
-  const relatedIds = hookState.activePreset
-    ? collectPresetRelatedMemoryIds(targetMemories, hookState.activePreset)
+  const relatedIds = effectivePreset
+    ? collectPresetRelatedMemoryIds(targetMemories, effectivePreset)
     : undefined;
   const hasRelatedMark = relatedIds ? Object.values(relatedIds).some((ids) => ids.length > 0) : false;
 
@@ -450,7 +483,6 @@ function modifyRequestBody(bodyStr: string): string | null {
     // 首轮：完整系统模板（记忆+工具 schema+预设+格式提醒）。
     const result = buildAugmentedPrompt(originalPrompt, targetMemories, {
       thinkingEnabled,
-      identityOnly,
       tokenBudget: hookState.memoryTokenBudget,
       toolDescriptors: hookState.toolDescriptors,
       instructionBlock: needPreset ? presetInstruction : '',
@@ -497,15 +529,15 @@ function modifyRequestBody(bodyStr: string): string | null {
   return JSON.stringify(body);
 }
 
-function collectMemorySources(resolved: ResolvedSkills): MemorySourceResult {
+function collectMemorySources(resolved: ResolvedSkills, preset: SystemPromptPreset | null): MemorySourceResult {
   const sources: Array<{ enabled: boolean; ids?: number[] }> = [];
 
   sources.push({ enabled: resolved.memoryEnabled, ids: resolved.memoryIds });
 
-  if (hookState.activePreset) {
+  if (preset) {
     sources.push({
-      enabled: hookState.activePreset.memoryEnabled === true,
-      ids: hookState.activePreset.memoryIds,
+      enabled: preset.memoryEnabled === true,
+      ids: preset.memoryIds,
     });
   }
 
@@ -551,22 +583,19 @@ interface ResolvedSkills {
   memoryIds?: number[];
 }
 
-function resolveActivePresetMemories(): Memory[] {
-  const memoryIds = hookState.activePreset?.memoryIds;
+/** 预设限定的记忆集合（preset.memoryIds 为空 = 全量记忆）。 */
+function resolvePresetMemories(preset: SystemPromptPreset): Memory[] {
+  const memoryIds = preset.memoryIds;
   if (!memoryIds || memoryIds.length === 0) return hookState.memories;
   return hookState.memories.filter((memory) => memory.id !== undefined && memoryIds.includes(memory.id));
 }
 
-function getPresetInstruction(): string {
-  return hookState.activePreset?.content ?? '';
+function isPresetMemoryEnabled(preset: SystemPromptPreset): boolean {
+  return preset.memoryEnabled === true;
 }
 
-function isPresetMemoryEnabled(): boolean {
-  return hookState.activePreset?.memoryEnabled === true;
-}
-
-function shouldUseMemoryPromptForSkill(resolved: ResolvedSkills): boolean {
-  return isPresetMemoryEnabled() || resolved.memoryEnabled;
+function shouldUseMemoryPromptForSkill(resolved: ResolvedSkills, preset: SystemPromptPreset | null): boolean {
+  return (preset ? isPresetMemoryEnabled(preset) : false) || resolved.memoryEnabled;
 }
 
 function buildPromptForInstructionMode(

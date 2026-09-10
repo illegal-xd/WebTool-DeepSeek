@@ -1,5 +1,6 @@
 import { getLocalValue, setLocalValue } from '../storage/chrome';
 import { SYSTEM_TEMPLATE_CHAT } from '../templates';
+import { MEMORY_TOKEN_BUDGET } from '../constants';
 
 const STORAGE_KEY = 'webtool_deepseek_memory_config';
 
@@ -13,7 +14,7 @@ export interface MemoryConfig {
 }
 
 const DEFAULT_CONFIG: MemoryConfig = {
-  tokenBudget: 3000,
+  tokenBudget: MEMORY_TOKEN_BUDGET,
   singleMemoryInjection: false,
   customMemoryEnabled: false,
   customMemoryPrompt: DEFAULT_CUSTOM_MEMORY_PROMPT,

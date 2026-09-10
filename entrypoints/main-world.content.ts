@@ -4,7 +4,6 @@ import type { TemplateOverrides } from '../core/templates/overrides';
 import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
-import { updatePresetTag } from '../core/ui/preset-tag';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS } from '../core/tool';
 import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
@@ -99,11 +98,10 @@ export default defineContentScript({
 
       switch (event.data.type) {
         case 'SYNC_STATE': {
-          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget, memoryConfig, templateOverrides } = event.data as {
+          const { memories, skills, presets, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget, memoryConfig, templateOverrides } = event.data as {
             memories: Memory[];
             skills: Skill[];
             presets: SystemPromptPreset[];
-            activePreset: SystemPromptPreset | null;
             modelType: ModelType;
             toolDescriptors?: ToolDescriptor[];
             recognizedToolTags?: string[];
@@ -117,7 +115,7 @@ export default defineContentScript({
           updateHookState({
             memories,
             skills,
-            activePreset,
+            presets,
             modelType,
             toolDescriptors: toolDescriptors ?? [],
             recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS],
@@ -135,7 +133,6 @@ export default defineContentScript({
           initSkillPopup(skills);
           initMemoryPopup(activeMemoryConfig?.customMemoryEnabled === true ? [] : memories);
           initPresetPopup(presets);
-          updatePresetTag(activePreset);
           break;
         }
         case 'TEMPLATES_UPDATED': {

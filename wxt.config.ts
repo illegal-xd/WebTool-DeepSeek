@@ -1,5 +1,6 @@
 import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
+import UnoCSS from '@unocss/vite';
 import { APP_VERSION } from './config.js';
 
 export default defineConfig({
@@ -21,6 +22,6 @@ export default defineConfig({
     ],
   },
   vite: () => ({
-    plugins: [tailwindcss()],
+    plugins: [tailwindcss(), UnoCSS()],
   }),
 });

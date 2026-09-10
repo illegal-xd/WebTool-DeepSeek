@@ -3,17 +3,17 @@ import { getVisibleTabsForFeatureVisibility } from '../entrypoints/sidepanel/App
 
 assert.deepEqual(
   getVisibleTabsForFeatureVisibility({ conversation: true, mcp: true }).map((tab) => tab.key),
-  ['memory', 'skill', 'preset', 'mcp', 'conversation', 'settings'],
+  ['memory', 'skill', 'preset', 'mcp', 'inject', 'conversation', 'settings'],
 );
 
 assert.deepEqual(
   getVisibleTabsForFeatureVisibility({ conversation: false, mcp: true }).map((tab) => tab.key),
-  ['memory', 'skill', 'preset', 'mcp', 'settings'],
+  ['memory', 'skill', 'preset', 'mcp', 'inject', 'settings'],
 );
 
 assert.deepEqual(
   getVisibleTabsForFeatureVisibility({ conversation: true, mcp: false }).map((tab) => tab.key),
-  ['memory', 'skill', 'preset', 'conversation', 'settings'],
+  ['memory', 'skill', 'preset', 'inject', 'conversation', 'settings'],
 );
 
 console.log('ok - sidepanel memory tab remains visible independently of custom memory mode');

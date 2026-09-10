@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Memory, MemoryType, NewMemory } from '../../../core/types';
-import { memoryWeight } from '../../../core/weighting';
+import { memoryMatchScore, memoryWeight } from '../../../core/weighting';
 import MemoryCard from '../components/MemoryCard';
 import MemoryForm from '../components/MemoryForm';
 import SidepanelModal from '../components/SidepanelModal';
+import Select from '../components/ui/Select';
+import Skeleton from '../components/ui/Skeleton';
 import { MEMORY_TYPE_CONFIG } from '../constants';
 
 const FILTER_TYPES: { key: MemoryType | 'all'; label: string }[] = [
@@ -21,6 +23,9 @@ const SORT_OPTIONS: { key: MemorySortKey; label: string }[] = [
 
 export default function MemoryPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
+  const [archived, setArchived] = useState<Memory[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showArchived, setShowArchived] = useState(false);
   const [filter, setFilter] = useState<MemoryType | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortKey, setSortKey] = useState<MemorySortKey>('highestWeight');
@@ -28,8 +33,17 @@ export default function MemoryPage() {
   const [editingMemory, setEditingMemory] = useState<Memory | null>(null);
 
   const load = useCallback(async () => {
-    const list: Memory[] = await chrome.runtime.sendMessage({ type: 'GET_MEMORIES' });
-    setMemories(list ?? []);
+    setLoading(true);
+    try {
+      const all: Memory[] = await chrome.runtime.sendMessage({
+        type: 'GET_MEMORIES',
+        payload: { includeArchived: true },
+      });
+      setMemories((all ?? []).filter((memory) => !memory.archivedAt));
+      setArchived((all ?? []).filter((memory) => Boolean(memory.archivedAt)));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -46,15 +60,12 @@ export default function MemoryPage() {
   }, [load]);
 
   const filtered = useMemo(() => {
-    const keyword = searchQuery.trim().toLowerCase();
+    const keyword = searchQuery.trim();
     return memories
       .filter((memory) => {
         if (filter !== 'all' && memory.type !== filter) return false;
         if (!keyword) return true;
-        return (
-          memory.name.toLowerCase().includes(keyword) ||
-          memory.tags.some((tag) => tag.toLowerCase().includes(keyword))
-        );
+        return memoryMatchScore(memory, keyword) > 0;
       })
       .toSorted((a, b) => {
         if (sortKey === 'highestWeight') {
@@ -122,6 +133,11 @@ export default function MemoryPage() {
     load();
   };
 
+  const handleRestore = async (id: number) => {
+    await chrome.runtime.sendMessage({ type: 'RESTORE_MEMORY', payload: { id } });
+    load();
+  };
+
   return (
     <div className="p-4 space-y-3">
       <div
@@ -172,19 +188,14 @@ export default function MemoryPage() {
             className="min-w-0 flex-1 px-3 py-2 text-xs rounded-lg border outline-none transition-colors focus:border-[var(--ds-blue)]"
             style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
           />
-          <select
+          <Select
+            className="shrink-0"
             value={sortKey}
-            onChange={(event) => setSortKey(event.target.value as MemorySortKey)}
-            className="shrink-0 px-3 py-2 text-xs rounded-lg border outline-none transition-colors focus:border-[var(--ds-blue)]"
-            style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
-            aria-label="排序方式"
-          >
-            {SORT_OPTIONS.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            options={SORT_OPTIONS.map((option) => ({ value: option.key, label: option.label }))}
+            onChange={setSortKey}
+            triggerClassName="rounded-lg px-3 py-2 text-xs"
+            ariaLabel="排序方式"
+          />
         </div>
       </div>
 
@@ -197,7 +208,9 @@ export default function MemoryPage() {
         />
       </SidepanelModal>
 
-      {filtered.length === 0 ? (
+      {loading ? (
+        <Skeleton lines={4} style={{ paddingTop: 4 }} />
+      ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 gap-3">
           <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-xl" style={{ background: 'var(--ds-surface)' }}>
             🧠
@@ -207,7 +220,7 @@ export default function MemoryPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="ds-list-in space-y-2">
           {filtered.map((m) => (
             <MemoryCard
               key={m.id}
@@ -220,8 +233,40 @@ export default function MemoryPage() {
         </div>
       )}
 
+      {archived.length > 0 && (
+        <div className="space-y-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setShowArchived((value) => !value)}
+            className="w-full text-[11px] px-3 py-2 rounded-lg transition-all duration-150"
+            style={{ background: 'var(--ds-surface)', color: 'var(--ds-text-secondary)' }}
+          >
+            {showArchived ? '收起' : '查看'}已归档 {archived.length} 条（软删除：不参与注入，数据保留）
+          </button>
+          {showArchived && archived.map((memory) => (
+            <div
+              key={memory.id}
+              className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg"
+              style={{ background: 'var(--ds-surface)' }}
+            >
+              <div className="min-w-0">
+                <div className="text-xs truncate" style={{ color: 'var(--ds-text)' }}>{memory.name}</div>
+                <div className="text-[10px] truncate" style={{ color: 'var(--ds-text-tertiary)' }}>{memory.content}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleRestore(memory.id!)}
+                className="ds-btn-secondary shrink-0 px-2.5 py-1 text-[11px] rounded-lg transition-all duration-150"
+              >
+                恢复
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="text-[11px] text-center pt-1" style={{ color: 'var(--ds-text-tertiary)' }}>
-        共 {memories.length} 条记忆
+        共 {memories.length} 条记忆{archived.length > 0 ? `（另有已归档 ${archived.length} 条）` : ''}
       </div>
 
       <div className="ds-info-panel rounded-xl p-3.5">

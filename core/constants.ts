@@ -2,12 +2,21 @@ export const DEEPSEEK_API_URL = 'https://chat.deepseek.com/api/v0/chat/completio
 
 export const MEMORY_TOKEN_BUDGET = 3000;
 
-// @Iteration: [v0.6] 无任何引用（grep 全局 0 命中），保留待用户决策删除；
-// 若需发送消息前缀，请使用明确命名的常量。
-export const MSG_PREFIX = 'DEEPSEEK_PP';
+/**
+ * 单条记忆注入上限（占总 Token 预算比例）。超过该比例的单条记忆不参与注入，
+ * 避免「一条长文档记忆撑爆整轮预算并挤掉其他记忆」。
+ */
+export const MEMORY_SINGLE_ENTRY_MAX_RATIO = 0.5;
 
-// @Iteration: [v0.6] 无任何引用；DSML 格式的字符串字面量请勿使用此常量。
-export const DSML = '｜DSML｜';
+/**
+ * 关键词命中计分上限（tag / name / content）。命中数原先按词频无界累加，
+ * 长文本会以数百分的差距霸榜；对齐检索侧 bm25 的「长度归一」思想，改为饱和计分。
+ */
+export const MEMORY_KEYWORD_MAX_HITS = {
+  tag: 6,
+  name: 5,
+  content: 20,
+} as const;
 
 export const STOP_WORDS = new Set([
   '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个',
@@ -24,10 +33,6 @@ export const STOP_WORDS = new Set([
   'him', 'know', 'take', 'into', 'your', 'some', 'could', 'them', 'than',
   'other', 'been', 'has', 'its', 'use', 'two', 'how', 'our', 'way',
 ]);
-
-// @Iteration: [v0.6] 无引用；请使用 core/tool/memory.ts 的 MEMORY_TOOL_NAMES。
-export const TOOL_NAMES = ['memory_save', 'memory_update', 'memory_delete'] as const;
-export type ToolName = typeof TOOL_NAMES[number];
 
 export const TOOL_CALL_REGEX = /<(memory_save|memory_update|memory_delete)>\s*([\s\S]*?)\s*<\/\1>/g;
 

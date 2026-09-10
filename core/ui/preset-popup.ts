@@ -1,6 +1,6 @@
 import type { SystemPromptPreset } from '../types';
 import { sortPresetsByWeight } from '../weighting';
-import { SLIDE_UP_KEYFRAMES, injectStyleElement } from './popup-common';
+import { injectStyleElement, popupChromeCss, setNativeTextareaValue } from './popup-common';
 
 let popupEl: HTMLElement | null = null;
 let presets: SystemPromptPreset[] = [];
@@ -45,27 +45,12 @@ function onInput() {
 
   if (val.startsWith('@') && !val.slice(1).includes(' ')) {
     const query = val.slice(1).toLowerCase();
-
-    // Virtual close preset option
-    const closeItem: SystemPromptPreset = {
-      id: 'close',
-      name: 'close',
-      content: '关闭并取消当前激活的系统预设提示词',
-      createdAt: 0,
-      updatedAt: 0,
-    };
-
-    const sortedPresets = sortPresetsByWeight(presets, query);
-    const candidates = query === ''
-      ? [closeItem, ...sortedPresets]
-      : [
-          ...(closeItem.name.includes(query) || closeItem.content.includes(query) ? [closeItem] : []),
-          ...sortedPresets,
-        ];
-
     filtered = query === ''
-      ? candidates
-      : candidates.filter(p => p.name.toLowerCase().includes(query));
+      ? sortPresetsByWeight(presets)
+      : sortPresetsByWeight(
+          presets.filter(p => p.name.toLowerCase().includes(query)),
+          query,
+        );
 
     if (filtered.length > 0) {
       activeIdx = 0;
@@ -116,29 +101,9 @@ function onClickOutside(e: MouseEvent) {
 function selectPreset(preset: SystemPromptPreset) {
   if (!textarea || !preset) return;
 
-  const id = preset.id === 'close' ? null : preset.id;
-  window.postMessage({
-    source: 'WebTool-DeepSeek-main',
-    type: 'SET_ACTIVE_PRESET',
-    id,
-  });
-
-  // Invalidate React's value tracker: set it to the current (non-empty) value
-  // so React sees a difference when we clear the DOM value to ''.
-  const tracker = (textarea as any)._valueTracker;
-  if (tracker) tracker.setValue(textarea.value || '@');
-
-  const nativeSetter = Object.getOwnPropertyDescriptor(
-    HTMLTextAreaElement.prototype, 'value',
-  )?.set;
-  if (nativeSetter) {
-    nativeSetter.call(textarea, '');
-  } else {
-    textarea.value = '';
-  }
-
-  textarea.dispatchEvent(new Event('input', { bubbles: true }));
-  textarea.focus();
+  // 只把 `@预设名` 作为文案插入输入框，不写入任何激活状态：
+  // 该预设仅对当条消息生效，发送时由 fetch-hook 解析（core/preset/mention.ts）。
+  setNativeTextareaValue(textarea, `@${preset.name} `, '');
   hidePopup();
 }
 
@@ -179,15 +144,11 @@ function buildItems() {
     trigger.className = 'dpp-preset-trigger';
     trigger.textContent = `@${p.name}`;
 
-    const badge = document.createElement('span');
-    badge.className = p.id === 'close' ? 'dpp-preset-badge close' : 'dpp-preset-badge preset';
-    badge.textContent = p.id === 'close' ? '系统' : '预设';
-
     const desc = document.createElement('div');
     desc.className = 'dpp-preset-desc';
     desc.textContent = p.content;
 
-    head.append(trigger, badge);
+    head.appendChild(trigger);
     item.append(head, desc);
     item.addEventListener('mouseenter', () => {
       activeIdx = i;
@@ -224,32 +185,7 @@ function isVisible() {
 
 function injectStyles() {
   injectStyleElement('dpp-preset-popup-css', `
-.dpp-preset-popup {
-  position: fixed;
-  z-index: 99999;
-  background: var(--dpp-prompt-bg, #FFFFFF);
-  border: 1px solid var(--dpp-prompt-border, #E5E7EB);
-  border-radius: 12px;
-  padding: 4px;
-  box-shadow: var(--dpp-prompt-shadow, 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04));
-  display: none;
-  animation: dpp-slide-up .15s ease;
-  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
-  backdrop-filter: blur(8px);
-  max-height: 220px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-${SLIDE_UP_KEYFRAMES}
-.dpp-preset-item {
-  padding: 8px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background .1s;
-}
-.dpp-preset-item.dpp-active {
-  background: var(--dpp-preset-bg, #FFFBEB);
-}
+${popupChromeCss('preset', 'var(--dpp-preset-bg, #FFFBEB)')}
 .dpp-preset-head {
   display: flex;
   align-items: center;
@@ -268,21 +204,6 @@ ${SLIDE_UP_KEYFRAMES}
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.dpp-preset-badge {
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  text-transform: uppercase;
-  font-weight: 500;
-}
-.dpp-preset-badge.preset {
-  color: var(--dpp-preset-color, #D97706);
-  background: var(--dpp-preset-bg, #FFFBEB);
-}
-.dpp-preset-badge.close {
-  color: var(--dpp-danger-color, #EF4444);
-  background: var(--dpp-danger-bg, #FEF2F2);
 }
 .dpp-preset-desc {
   color: var(--dpp-prompt-text-muted, #9CA3AF);

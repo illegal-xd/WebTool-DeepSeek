@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Memory, MemoryScope, MemoryType, NewMemory } from '../../../core/types';
-import { memoryUsageScore, memoryRecencyScore } from '../../../core/weighting';
+import { MEMORY_SCOPE_BASE, defaultMemoryScope, memoryUsageScore, memoryRecencyScore } from '../../../core/weighting';
 import { MEMORY_TYPE_CONFIG } from '../constants';
 
 function round2(v: number): number {
@@ -13,35 +13,33 @@ interface Props {
   onCancel: () => void;
 }
 
-const SCOPE_OPTIONS: { key: MemoryScope; label: string; weight: number; color: string }[] = [
-  { key: 'temporary', label: '低', weight: 80, color: '#f59e0b' },
-  { key: 'contextual', label: '中', weight: 180, color: '#3b82f6' },
-  { key: 'permanent', label: '高', weight: 300, color: '#10b981' },
+const SCOPE_OPTIONS: { key: MemoryScope; label: string; color: string }[] = [
+  { key: 'temporary', label: '低', color: '#f59e0b' },
+  { key: 'contextual', label: '中', color: '#3b82f6' },
+  { key: 'permanent', label: '高', color: '#10b981' },
 ];
-
-function defaultScope(type: MemoryType): MemoryScope {
-  return type === 'user' || type === 'feedback' ? 'permanent' : 'contextual';
-}
 
 export default function MemoryForm({ initial, onSave, onCancel }: Props) {
   const [type, setType] = useState<MemoryType>(initial?.type ?? 'topic');
   const [name, setName] = useState(initial?.name ?? '');
   const [content, setContent] = useState(initial?.content ?? '');
   const [tags, setTags] = useState(initial?.tags?.join(', ') ?? '');
-  const [scope, setScope] = useState<MemoryScope>(initial?.scope ?? defaultScope(initial?.type ?? 'topic'));
+  const [scope, setScope] = useState<MemoryScope>(
+    initial?.scope ?? defaultMemoryScope({ type: initial?.type ?? 'topic', pinned: false }),
+  );
   const [pinned] = useState(initial?.pinned ?? false);
 
   const scopeIndex = SCOPE_OPTIONS.findIndex((o) => o.key === scope);
 
   const weightBreakdown = useMemo(() => {
-    const base = round2(SCOPE_OPTIONS.find((o) => o.key === scope)?.weight ?? 0);
+    const base = round2(MEMORY_SCOPE_BASE[scope]);
     const pinnedBonus = round2(pinned ? 1000 : 0);
     const usageScore = round2(memoryUsageScore(initial?.accessCount ?? 0));
     const recencyScore = round2(memoryRecencyScore(initial?.lastAccessedAt ?? Date.now()));
     const subtotal = round2(base + pinnedBonus + usageScore + recencyScore);
     // Total weight at each level (for slider labels)
     const levelTotals = SCOPE_OPTIONS.map((opt) => {
-      const lvlBase = round2(opt.weight);
+      const lvlBase = round2(MEMORY_SCOPE_BASE[opt.key]);
       return round2(lvlBase + pinnedBonus + usageScore + recencyScore);
     });
     return { base, pinnedBonus, usageScore, recencyScore, subtotal, levelTotals };
@@ -50,7 +48,7 @@ export default function MemoryForm({ initial, onSave, onCancel }: Props) {
   const handleTypeChange = (newType: MemoryType) => {
     setType(newType);
     if (!initial) {
-      setScope(defaultScope(newType));
+      setScope(defaultMemoryScope({ type: newType, pinned: false }));
     }
   };
 
@@ -66,7 +64,6 @@ export default function MemoryForm({ initial, onSave, onCancel }: Props) {
       scope,
       name: name.trim(),
       content: content.trim(),
-      description: name.trim(),
       tags: tags.split(/[,，]/).map((t) => t.trim()).filter(Boolean),
       pinned: initial?.pinned ?? false,
     });
