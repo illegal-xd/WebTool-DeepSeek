@@ -49,6 +49,17 @@ function getStatusLabel(server: McpServerConfig): string {
   return server.enabled ? STATUS_LABELS[server.status] : STATUS_LABELS.disabled;
 }
 
+/** 调用时间格式化：刚刚 / N分钟前 / HH:mm / M-D HH:mm。 */
+function formatCallTime(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分钟前`;
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (d.toDateString() === new Date().toDateString()) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function getMcpOriginPattern(server: McpServerConfig): string | null {
   const url = server.transport.url;
   if (!url) return null;
@@ -84,10 +95,14 @@ export default function McpPage() {
   const [showForm, setShowForm] = useState(false);
   const [message, setMessage] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [toolsCollapsed, setToolsCollapsed] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
 
   const selected = servers.find((server) => server.id === selectedId) ?? servers[0] ?? null;
-  const selectedCache = selected ? caches[selected.id] ?? null : null;
-  const mcpHistory = history.filter((record) => record.call.provider?.kind === 'mcp');
+  const selectedId_ = selected?.id;
+  const selectedCache = useMemo(() => (selected ? (caches[selected.id] ?? null) : null), [caches, selected]);
+  // 仅展示当前选中 MCP 服务的调用记录。
+  const mcpHistory = useMemo(() => history.filter((record) => record.call.provider?.kind === 'mcp' && record.call.provider?.id === selectedId_), [history, selectedId_]);
   const totalTools = useMemo(() => Object.values(caches).reduce((sum, cache) => sum + (cache?.descriptors.length ?? 0), 0), [caches]);
 
   const load = useCallback(async () => {
@@ -274,74 +289,129 @@ export default function McpPage() {
         </SidepanelModal>
       )}
 
-      <section className="grid grid-cols-[145px_1fr] gap-3 min-h-[420px]">
-        <div className="space-y-2">
-          {servers.map((server) => (
-            <button key={server.id} type="button" className="ds-card w-full rounded-2xl p-3 text-left" style={{ borderColor: selected?.id === server.id ? 'var(--ds-blue)' : undefined }} onClick={() => setSelectedId(server.id)}>
-              <div className="text-[13px] font-medium truncate" style={{ color: 'var(--ds-text)' }}>{server.displayName}</div>
-              <div className="text-[11px] mt-1" style={{ color: server.status === 'ready' ? 'var(--ds-success)' : server.status === 'error' ? 'var(--ds-danger)' : 'var(--ds-text-tertiary)' }}>
-                {getStatusLabel(server)} · {getTransportLabel(server.transport.kind)}
-              </div>
-            </button>
-          ))}
-          {servers.length === 0 && <div className="text-[12px] p-3" style={{ color: 'var(--ds-text-tertiary)' }}>暂无 MCP 服务</div>}
+      <section className="ds-card rounded-2xl p-4 space-y-4">
+        {/* 服务选择器 */}
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] shrink-0" style={{ color: 'var(--ds-text-secondary)' }}>服务</span>
+          <select
+            aria-label="选择 MCP 服务"
+            className="ds-input flex-1 rounded-xl px-3 py-2 text-[13px] min-w-0"
+            value={selected?.id ?? ''}
+            onChange={(e) => setSelectedId(e.target.value || null)}
+            disabled={servers.length === 0}
+          >
+            {servers.map((server) => (
+              <option key={server.id} value={server.id}>{server.displayName}</option>
+            ))}
+          </select>
+          <button type="button" className="ds-btn-secondary rounded-lg px-2.5 py-2 text-[11px] shrink-0" onClick={() => void refresh(selected!)} disabled={!selected || busyId === selected.id}>刷新</button>
+          <button type="button" className="ds-btn-secondary rounded-lg px-2.5 py-2 text-[11px] shrink-0" onClick={() => void refresh(selected!, true)} disabled={!selected || busyId === selected.id}>测试</button>
         </div>
 
-        <div className="ds-card rounded-2xl p-4 min-w-0">
-          {selected ? (
-            <div className="space-y-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <h3 className="text-[15px] font-semibold truncate" style={{ color: 'var(--ds-text)' }}>{selected.displayName}</h3>
-                  <p className="text-[12px] mt-1 truncate" style={{ color: 'var(--ds-text-secondary)' }}>{selected.transport.url || selected.transport.nativeHost || selected.transport.command || '未配置端点'}</p>
-                </div>
-                <div className="flex gap-1 shrink-0">
-                  <button type="button" className="ds-btn-secondary rounded-lg px-2 py-1 text-[11px]" onClick={() => void toggleEnabled(selected)}>{selected.enabled ? '停用' : '启用'}</button>
-                  <button type="button" className="ds-btn-secondary rounded-lg px-2 py-1 text-[11px]" onClick={() => startEdit(selected)}>编辑</button>
-                  <button type="button" className="ds-btn-danger rounded-lg px-2 py-1 text-[11px]" onClick={() => void remove(selected)}>删除</button>
-                  {/* <button type="button" className="ds-btn-danger rounded-lg px-2 py-1 text-[11px]" onClick={() => void clearMcpHistory()}>清空调用</button> */}
-                </div>
-              </div>
+        {servers.length === 0 && (
+          <div className="text-[12px] p-3 text-center" style={{ color: 'var(--ds-text-tertiary)' }}>
+            暂无 MCP 服务，请先新增。
+          </div>
+        )}
 
-              <div className="flex gap-2">
-                <button type="button" className="ds-btn-primary px-4 py-1.5 text-xs font-medium text-white rounded-lg transition-all duration-150" disabled={busyId === selected.id} onClick={() => void refresh(selected)}>
-                  {busyId === selected.id ? '刷新中...' : '发现工具'}
-                </button>
-                <button type="button" className="ds-btn-cancel px-3.5 py-1.5 text-xs font-medium rounded-lg transition-all duration-150" disabled={busyId === selected.id} onClick={() => void refresh(selected, true)}>测试连接</button>
+        {selected ? (
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="text-[15px] font-semibold truncate" style={{ color: 'var(--ds-text)' }}>{selected.displayName}</h3>
+                <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--ds-text-secondary)' }}>
+                  <span style={{ color: selected.status === 'ready' ? 'var(--ds-success)' : selected.status === 'error' ? 'var(--ds-danger)' : 'var(--ds-text-tertiary)' }}>{getStatusLabel(selected)}</span>
+                  {' · '}{getTransportLabel(selected.transport.kind)}
+                  {' · '}{selected.transport.url || selected.transport.nativeHost || selected.transport.command || '未配置端点'}
+                </p>
               </div>
-
-              <div>
-                <div className="text-[12px] font-medium mb-2" style={{ color: 'var(--ds-text-secondary)' }}>工具列表</div>
-                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                  {(selectedCache?.descriptors ?? []).map((tool) => (
-                    <div key={tool.id} className="ds-surface-panel rounded-xl p-3">
-                      <div className="text-[12px] font-medium" style={{ color: 'var(--ds-text)' }}>{tool.title}</div>
-                      <div className="mcp-tool-invocation block max-w-full whitespace-normal break-all text-[11px] mt-1 font-mono leading-snug" style={{ color: 'var(--ds-blue)', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{tool.invocationName}</div>
-                      <p className="text-[11px] mt-1 line-clamp-2" style={{ color: 'var(--ds-text-secondary)' }}>{tool.description}</p>
-                    </div>
-                  ))}
-                  {!selectedCache?.descriptors.length && <div className="text-[12px]" style={{ color: 'var(--ds-text-tertiary)' }}>尚未发现工具，点击“发现工具”开始。</div>}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-[12px] font-medium mb-2" style={{ color: 'var(--ds-text-secondary)' }}>最近调用</div>
-                <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
-                  {mcpHistory.slice(0, 6).map((record) => (
-                    <div key={record.id} className="text-[11px] ds-surface-panel rounded-xl p-2" style={{ color: 'var(--ds-text-secondary)' }}>
-                      <span style={{ color: record.result.ok ? 'var(--ds-success)' : 'var(--ds-danger)' }}>{record.result.ok ? '成功' : '失败'}</span>
-                      <span> · {record.call.name} · {record.result.summary}</span>
-                    </div>
-                  ))}
-                  {mcpHistory.length === 0 && <div className="text-[12px]" style={{ color: 'var(--ds-text-tertiary)' }}>暂无 MCP 调用记录</div>}
-                </div>
+              <div className="flex gap-1 shrink-0">
+                <button type="button" className="ds-btn-secondary rounded-lg px-2 py-1 text-[11px]" onClick={() => void toggleEnabled(selected)}>{selected.enabled ? '停用' : '启用'}</button>
+                <button type="button" className="ds-btn-secondary rounded-lg px-2 py-1 text-[11px]" onClick={() => startEdit(selected)}>编辑</button>
+                <button type="button" className="ds-btn-danger rounded-lg px-2 py-1 text-[11px]" onClick={() => void remove(selected)}>删除</button>
+                {mcpHistory.length > 0 && (
+                  <button type="button" className="ds-btn-secondary rounded-lg px-2 py-1 text-[11px]" onClick={() => void clearMcpHistory()}>清空调用</button>
+                )}
               </div>
             </div>
-          ) : (
-            <div className="text-[13px]" style={{ color: 'var(--ds-text-tertiary)' }}>选择或新增一个 MCP 服务。</div>
-          )}
-        </div>
+
+            {busyId === selected.id && (
+              <div className="text-[11px] text-[var(--ds-text-tertiary)]">正在刷新工具清单…</div>
+            )}
+
+            <CollapsibleSection
+              title="工具列表"
+              count={selectedCache?.descriptors.length ?? 0}
+              collapsed={toolsCollapsed}
+              onToggle={() => setToolsCollapsed((v) => !v)}
+            >
+              <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
+                {(selectedCache?.descriptors ?? []).map((tool) => (
+                  <div key={tool.id} className="ds-surface-panel rounded-xl p-3">
+                    <div className="text-[12px] font-medium" style={{ color: 'var(--ds-text)' }}>{tool.title}</div>
+                    <div className="mcp-tool-invocation block max-w-full whitespace-normal break-all text-[11px] mt-1 font-mono leading-snug" style={{ color: 'var(--ds-blue)', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{tool.invocationName}</div>
+                    <p className="text-[11px] mt-1 line-clamp-2" style={{ color: 'var(--ds-text-secondary)' }}>{tool.description}</p>
+                  </div>
+                ))}
+                {!selectedCache?.descriptors.length && <div className="text-[12px]" style={{ color: 'var(--ds-text-tertiary)' }}>尚未发现工具，点击上方「发现工具」开始。</div>}
+              </div>
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="最近调用"
+              count={mcpHistory.length}
+              collapsed={historyCollapsed}
+              onToggle={() => setHistoryCollapsed((v) => !v)}
+            >
+              <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                {mcpHistory.slice(0, 10).map((record) => (
+                  <div key={record.id} className="text-[11px] ds-surface-panel rounded-xl p-2" style={{ color: 'var(--ds-text-secondary)' }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span style={{ color: record.result.ok ? 'var(--ds-success)' : 'var(--ds-danger)' }}>{record.result.ok ? '成功' : '失败'}</span>
+                      <span className="text-[10px] shrink-0" style={{ color: 'var(--ds-text-tertiary)' }}>{formatCallTime(record.createdAt)}</span>
+                    </div>
+                    <div className="mt-1 truncate" style={{ color: 'var(--ds-text)' }}>{record.call.name}</div>
+                    <div className="mt-0.5 break-words" style={{ overflowWrap: 'anywhere' }}>{record.result.summary}</div>
+                  </div>
+                ))}
+                {mcpHistory.length === 0 && <div className="text-[12px]" style={{ color: 'var(--ds-text-tertiary)' }}>当前服务暂无调用记录</div>}
+              </div>
+            </CollapsibleSection>
+          </div>
+        ) : null}
       </section>
+    </div>
+  );
+}
+
+/** 可折叠区块：标题 + 内容；点击标题区域切换折叠。 */
+function CollapsibleSection(props: {
+  title: string;
+  count?: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const { title, count, collapsed, onToggle, children } = props;
+  return (
+    <div className="ds-surface-panel rounded-xl overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left transition-colors"
+        onClick={onToggle}
+        style={{ background: 'transparent' }}
+      >
+        <span className="text-[12px] font-medium flex items-center gap-2" style={{ color: 'var(--ds-text)' }}>
+          {title}
+          {typeof count === 'number' && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ color: 'var(--ds-blue)', background: 'var(--ds-surface-hover)' }}>{count}</span>
+          )}
+        </span>
+        <svg className="w-3.5 h-3.5 transition-transform" style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', color: 'var(--ds-text-tertiary)' }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+      {!collapsed && <div className="px-3 pb-3 pt-0">{children}</div>}
     </div>
   );
 }

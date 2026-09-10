@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../../../config.js';
 import { DEFAULT_CUSTOM_MEMORY_PROMPT, type MemoryConfig } from '../../../core/memory/config';
+import { clearExpiredToolExecutionCache } from '../../../core/tool/cache';
 import { getFeatureVisibility, setFeatureVisibility, subscribeFeatureVisibility, type FeatureVisibility } from '../feature-visibility';
 import type { BackgroundConfig, McpServerConfig, Memory, SyncConfig, Skill, SystemPromptPreset } from '../../../core/types';
 import { useTheme } from '../../../hooks/useTheme';
@@ -448,6 +449,15 @@ export default function SettingsPage() {
       }
     };
     input.click();
+  };
+
+  const handleClearToolCache = async () => {
+    try {
+      const { deletedRecords } = await clearExpiredToolExecutionCache(chrome.storage.local);
+      alert(`缓存清理完成，共删除 ${deletedRecords} 条过期记录`);
+    } catch (error) {
+      alert('缓存清理失败: ' + (error instanceof Error ? error.message : String(error)));
+    }
   };
 
   const handleClearAll = async () => {
@@ -1111,6 +1121,13 @@ export default function SettingsPage() {
           className="ds-btn-danger w-full py-2.5 text-xs font-medium rounded-lg transition-all duration-150"
         >
           清除所有数据
+        </button>
+
+        <button
+          onClick={handleClearToolCache}
+          className="ds-btn-secondary w-full py-2.5 text-xs font-medium rounded-lg transition-all duration-150"
+        >
+          清理缓存
         </button>
       </section>
 

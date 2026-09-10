@@ -23,6 +23,11 @@ export function createToolInvocationCatalog(
   const descriptorByInvocationName = new Map<string, ToolDescriptor>();
   const descriptorByName = new Map<string, ToolDescriptor>();
   const invocationNames = new Set(recognizedTags.map((tag) => tag.trim()).filter(Boolean));
+  const descriptorNameCounts = new Map<string, number>();
+  for (const descriptor of descriptors) {
+    const name = descriptor.name.trim();
+    if (name) descriptorNameCounts.set(name, (descriptorNameCounts.get(name) ?? 0) + 1);
+  }
   for (const descriptor of descriptors) {
     const invocationName = descriptor.invocationName.trim();
     if (invocationName) {
@@ -31,6 +36,8 @@ export function createToolInvocationCatalog(
     }
     const name = descriptor.name.trim();
     if (name && !descriptorByName.has(name)) descriptorByName.set(name, descriptor);
+    // Accept concise model-generated tags only when they resolve to exactly one provider.
+    if (name && descriptorNameCounts.get(name) === 1) invocationNames.add(name);
   }
   return { descriptors, invocationNames: [...invocationNames], descriptorByInvocationName, descriptorByName };
 }

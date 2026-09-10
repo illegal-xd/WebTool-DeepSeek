@@ -1,5 +1,6 @@
 import { installFetchHook, updateHookState, reprocessStoredHistory, bindPendingSingleInjectionSession } from '../core/interceptor/fetch-hook';
 import type { MemoryConfig } from '../core/memory/config';
+import type { TemplateOverrides } from '../core/templates/overrides';
 import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
@@ -20,6 +21,9 @@ export default defineContentScript({
     watchRouteChanges();
 
     updateHookState({
+      onTurnStart() {
+        window.postMessage({ source: 'WebTool-DeepSeek-main', type: 'TURN_START' });
+      },
       onToolCall(call: ToolCall) {
         window.postMessage({
           source: 'WebTool-DeepSeek-main',
@@ -81,6 +85,13 @@ export default defineContentScript({
           name,
         });
       },
+      onInjectionEvent(event) {
+        window.postMessage({
+          source: 'WebTool-DeepSeek-main',
+          type: 'INJECTION_EVENT',
+          data: event,
+        });
+      },
     });
 
     window.addEventListener('message', (event) => {
@@ -88,7 +99,7 @@ export default defineContentScript({
 
       switch (event.data.type) {
         case 'SYNC_STATE': {
-          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget, memoryConfig } = event.data as {
+          const { memories, skills, presets, activePreset, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget, memoryConfig, templateOverrides } = event.data as {
             memories: Memory[];
             skills: Skill[];
             presets: SystemPromptPreset[];
@@ -98,6 +109,7 @@ export default defineContentScript({
             recognizedToolTags?: string[];
             memoryTokenBudget?: number;
             memoryConfig?: MemoryConfig;
+            templateOverrides?: TemplateOverrides;
           };
           latestMemories = memories;
           if (memoryConfig) latestMemoryConfig = memoryConfig;
@@ -109,6 +121,7 @@ export default defineContentScript({
             modelType,
             toolDescriptors: toolDescriptors ?? [],
             recognizedToolTags: recognizedToolTags ?? [...DEFAULT_RECOGNIZED_TOOL_TAGS],
+            templateOverrides,
             ...(activeMemoryConfig
               ? {
                   memoryTokenBudget: activeMemoryConfig.tokenBudget,
@@ -123,6 +136,11 @@ export default defineContentScript({
           initMemoryPopup(activeMemoryConfig?.customMemoryEnabled === true ? [] : memories);
           initPresetPopup(presets);
           updatePresetTag(activePreset);
+          break;
+        }
+        case 'TEMPLATES_UPDATED': {
+          const overrides = event.data.overrides as TemplateOverrides | undefined;
+          updateHookState({ templateOverrides: overrides });
           break;
         }
         case 'SYNC_TOOL_DESCRIPTORS': {
@@ -143,6 +161,13 @@ export default defineContentScript({
             });
             initMemoryPopup(config.customMemoryEnabled === true ? [] : latestMemories);
           }
+          break;
+        }
+        case 'SET_CONTINUATION_PROMPT': {
+          // content 在触发自动续聊前设置挂起的 continuation prompt，
+          // fetch-hook 拦截到下一个 completion 请求时用它替换用户输入。
+          const prompt = typeof event.data.prompt === 'string' ? event.data.prompt : null;
+          updateHookState({ pendingContinuationPrompt: prompt });
           break;
         }
       }

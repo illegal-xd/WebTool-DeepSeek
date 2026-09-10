@@ -8,12 +8,15 @@ import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, createXmlToo
 import type { MemoryConfig } from '../core/memory/config';
 import { THEME_QUERY, normalizeThemePreference, resolveTheme, type ResolvedTheme, type ThemePreference } from '../core/theme';
 import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCallHistoryRecord, ToolCardResult, ToolExecutionRecord, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
+import type { TemplateOverrides } from '../core/templates/overrides';
+import type { InjectionEvent } from '../core/inject/events';
+import { buildAutoContinuationPrompt, type ContinuationToolResult } from '../core/templates/prompts';
 
 const BLOCK_CLASS = 'dpp-tool-block';
 const BLOCK_STYLE_ID = 'dpp-tool-block-css';
 const STORAGE_PREFIX = 'dpp_tool_exec_';
 const RECOGNIZED_TOOL_TAGS = [...DEFAULT_RECOGNIZED_TOOL_TAGS];
-const ROUTE_RESTORE_WINDOW_MS = 4000;
+const ROUTE_RESTORE_WINDOW_MS = 8000;
 const ASSISTANT_MESSAGE_SELECTORS = [
   '[class*="message"][class*="assistant"]',
   '[class*="ds-chat-message-assistant"]',
@@ -35,6 +38,14 @@ const earlyPlaceholderNames: string[] = [];
 let currentToolDescriptors: ToolDescriptor[] = [];
 const pendingToolCleanupMessages = new Set<Element>();
 let toolCleanupFrame: number | null = null;
+
+// ─── 自动续聊状态 ──────────────────────────────────────────────────
+/** 本轮（当前 completion 请求）收集的工具执行结果，finalize 时用于续聊决策。 */
+const currentTurnResults: ContinuationToolResult[] = [];
+let continuationRound = 0;
+const MAX_CONTINUATION_ROUNDS = 8;
+/** 续聊请求发送后置 true，该请求的 onResponseComplete 之前有效，用于区分手动消息。 */
+let isAutoContinuing = false;
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
 const resolvedCallRaws = new Set<string>();
 const activeToolExecutions = new Set<Promise<unknown>>();
@@ -102,9 +113,9 @@ async function safeStorageLocalSet(data: Record<string, unknown>): Promise<void>
   }
 }
 
-/** 一次性拉取注入相关全部状态（记忆/技能/预设/模型/工具/记忆配置）。 */
+/** 一次性拉取注入相关全部状态（记忆/技能/预设/模型/工具/记忆配置/模板覆盖）。 */
 async function fetchAllState() {
-  const [memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig] = await Promise.all([
+  const [memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig, templateOverrides] = await Promise.all([
     safeRuntimeSendMessage<Memory[]>({ type: 'GET_MEMORIES' }),
     safeRuntimeSendMessage<Skill[]>({ type: 'GET_SKILLS' }),
     safeRuntimeSendMessage<SystemPromptPreset[]>({ type: 'GET_PRESETS' }),
@@ -112,8 +123,9 @@ async function fetchAllState() {
     safeRuntimeSendMessage<ModelType>({ type: 'GET_MODEL_TYPE' }),
     safeRuntimeSendMessage<ToolDescriptor[]>({ type: 'GET_TOOL_DESCRIPTORS' }),
     safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }),
+    safeRuntimeSendMessage<TemplateOverrides>({ type: 'GET_TEMPLATE_OVERRIDES' }),
   ]);
-  return { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig };
+  return { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig, templateOverrides };
 }
 
 export default defineContentScript({
@@ -126,10 +138,11 @@ export default defineContentScript({
     });
 
     const state = await fetchAllState();
-    const { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig } = state;
+    const { memories, skills, presets, activePreset, modelType, toolDescriptors, memoryConfig, templateOverrides } = state;
 
     currentToolDescriptors = toolDescriptors ?? [];
-    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors, memoryConfig ?? undefined);
+    syncToMainWorld(memories ?? [], skills ?? [], presets ?? [], activePreset, modelType, currentToolDescriptors, memoryConfig ?? undefined, templateOverrides ?? undefined);
+    markRouteRestoreWindow();
     restorePersistedToolBlocks();
 
     window.addEventListener('message', async (event) => {
@@ -144,7 +157,7 @@ export default defineContentScript({
         }
         case 'EXECUTE_TOOL_CALL': {
           const call = event.data.data as ToolCall;
-          let result: ToolCardResult = { ok: true, summary: call.name };
+          let result: ToolCardResult = { ok: true, summary: '已执行' };
           if (!resolvedCallRaws.has(call.raw)) {
             result = await trackToolExecution(executeToolCall(call));
             resolvedCallRaws.add(call.raw);
@@ -155,6 +168,19 @@ export default defineContentScript({
             data: result,
             callName: call.name,
           });
+          break;
+        }
+
+        case 'TURN_START': {
+          // 每个新的 completion 请求开始时重置当前工具块指针，
+          // 确保该轮首个工具调用创建新块、同轮后续工具调用复用此块。
+          // 不清理 pendingCallMap/resolvedCallRaws：上一轮异步执行可能仍在进行中。
+          currentToolBlock = null;
+          currentTurnResults.length = 0;
+          // 手动消息（非续聊）时重置续聊计数；续聊请求自身不清零计数。
+          if (!isAutoContinuing) {
+            continuationRound = 0;
+          }
           break;
         }
 
@@ -188,6 +214,12 @@ export default defineContentScript({
           markRouteRestoreWindow();
           clearRenderedToolBlocks();
           setTimeout(() => restorePersistedToolBlocks(), 900);
+          // 二次存活检查：历史加载的 React 重渲染可能在首次恢复后移除 block。
+          setTimeout(() => {
+            if (document.querySelectorAll(`.${BLOCK_CLASS}`).length === 0) {
+              restorePersistedToolBlocks();
+            }
+          }, 2500);
           break;
         }
         case 'SET_ACTIVE_PRESET': {
@@ -203,8 +235,14 @@ export default defineContentScript({
             state.modelType,
             currentToolDescriptors,
             state.memoryConfig ?? undefined,
+            state.templateOverrides ?? undefined,
           );
           cleanRenderedToolCalls();
+          break;
+        }
+        case 'INJECTION_EVENT': {
+          const injectionEvent = event.data.data as InjectionEvent;
+          await safeRuntimeSendMessage({ type: 'RECORD_INJECTION_EVENT', payload: injectionEvent });
           break;
         }
       }
@@ -239,6 +277,9 @@ export default defineContentScript({
           }
         });
         cleanRenderedToolCalls();
+      } else if (message.type === 'TEMPLATES_UPDATED') {
+        const overrides = message.overrides as TemplateOverrides | undefined;
+        window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'TEMPLATES_UPDATED', overrides });
       } else if (message.type === 'MEMORY_CONFIG_UPDATED') {
         const config = message as MemoryConfig;
         if (typeof config.tokenBudget === 'number' && config.tokenBudget > 0) {
@@ -300,6 +341,7 @@ function syncToMainWorld(
   modelType: ModelType,
   toolDescriptors: ToolDescriptor[],
   memoryConfig?: MemoryConfig,
+  templateOverrides?: TemplateOverrides,
 ) {
   window.postMessage({
     source: 'WebTool-DeepSeek-content',
@@ -312,6 +354,7 @@ function syncToMainWorld(
     toolDescriptors,
     memoryTokenBudget: memoryConfig?.tokenBudget,
     memoryConfig,
+    templateOverrides,
   });
 }
 
@@ -344,28 +387,44 @@ function injectBlockStyles() {
   document.head.appendChild(style);
 }
 
-function createToolBlockItem(name: string, summary: string, status?: 'done' | 'error'): HTMLElement {
+function createToolBlockItem(name: string, summary: string, status?: 'done' | 'error', detail?: string): HTMLElement {
   const item = document.createElement('div');
   item.className = 'dpp-tb-item';
   item.innerHTML = `
     <div class="dpp-tb-dot-wrap">
       <span class="dpp-tb-dot"></span>
     </div>
-    <span class="dpp-tb-item-name"></span>
-    <span class="dpp-tb-item-summary"></span>
+    <div class="dpp-tb-item-text">
+      <div>
+        <span class="dpp-tb-item-name"></span>
+        <span class="dpp-tb-item-status"></span>
+      </div>
+    </div>
   `;
 
   const dot = item.querySelector('.dpp-tb-dot') as HTMLElement | null;
   const nameEl = item.querySelector('.dpp-tb-item-name') as HTMLElement | null;
-  const summaryEl = item.querySelector('.dpp-tb-item-summary') as HTMLElement | null;
+  const statusEl = item.querySelector('.dpp-tb-item-status') as HTMLElement | null;
 
   if (status) {
     const stateClass = status === 'done' ? 'is-done' : 'is-error';
     dot?.classList.add(stateClass);
     nameEl?.classList.add(stateClass);
+    if (status === 'error') statusEl?.classList.add('is-error');
   }
   if (nameEl) nameEl.textContent = name;
-  if (summaryEl) summaryEl.textContent = summary;
+
+  // 摘要与工具名相同/冗余（如「memory_save」vs「保存记忆」）时不重复显示。
+  const redundant = summary.trim() === name || summary.trim() === '已执行' || summary.trim() === '执行中...';
+  if (statusEl) statusEl.textContent = redundant ? '' : summary;
+
+  // 有详情时挂在名称下方独立区块。
+  if (detail && detail.trim()) {
+    const detailEl = document.createElement('div');
+    detailEl.className = 'dpp-tb-item-detail';
+    detailEl.textContent = detail;
+    item.querySelector('.dpp-tb-item-text')?.appendChild(detailEl);
+  }
 
   return item;
 }
@@ -384,7 +443,6 @@ function createToolBlock(call: ToolCall): HTMLElement {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
       </span>
       <span class="dpp-tb-title tool-calls">工具调用</span>
-      <span class="dpp-tb-count">1</span>
       <span class="dpp-tb-chevron" aria-hidden="true">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </span>
@@ -392,7 +450,7 @@ function createToolBlock(call: ToolCall): HTMLElement {
     <div class="dpp-tb-body"></div>
   `;
 
-  block.querySelector('.dpp-tb-body')?.appendChild(createToolBlockItem(call.name, '执行中...'));
+  setToolBlockTitle(block, 0);
 
   const header = block.querySelector('.dpp-tb-header') as HTMLElement;
   header.addEventListener('click', () => toggleBlockCollapse(block));
@@ -407,14 +465,15 @@ function createToolBlock(call: ToolCall): HTMLElement {
 }
 
 function updateToolBlockWithResult(block: HTMLElement, call: ToolCall, result: ToolCardResult) {
-  // Find the item that matches this call.name (first unfinished item)
+  const callDisplayName = getToolDisplayName(call.name);
   const items = block.querySelectorAll('.dpp-tb-item');
   let targetItem: HTMLElement | null = null;
   for (const item of items) {
     const nameEl = item.querySelector('.dpp-tb-item-name');
-    if (nameEl && nameEl.textContent === call.name) {
-      const summaryEl = item.querySelector('.dpp-tb-item-summary');
-      if (summaryEl && summaryEl.textContent === '执行中...') {
+    if (nameEl && (nameEl.textContent === callDisplayName || nameEl.textContent === call.name)) {
+      const statusEl = item.querySelector('.dpp-tb-item-status');
+      // 以 status 文本「执行中...」或空作为未完成标记。
+      if (statusEl && (statusEl.textContent === '执行中...' || statusEl.textContent === '')) {
         targetItem = item as HTMLElement;
         break;
       }
@@ -422,61 +481,119 @@ function updateToolBlockWithResult(block: HTMLElement, call: ToolCall, result: T
   }
 
   if (!targetItem) {
-    // If no matching unfinished item found (was already resolved from TOOL_CALL path),
-    // try appending a new item
     addNewToolItem(block, call, result);
     return;
   }
 
-  const summaryEl = targetItem.querySelector('.dpp-tb-item-summary') as HTMLElement;
-  if (result.ok) {
-    // Show the memory name (from detail) or the summary
-    summaryEl.textContent = result.detail || result.summary;
-  } else {
-    summaryEl.textContent = result.summary;
+  const statusEl = targetItem.querySelector('.dpp-tb-item-status') as HTMLElement | null;
+  const displayedSummary = result.ok ? (result.detail || result.summary) : result.summary;
+  const redundant = displayedSummary === call.name
+    || displayedSummary === getToolDisplayName(call.name)
+    || displayedSummary === '已执行';
+  if (statusEl) {
+    statusEl.textContent = redundant ? '' : displayedSummary;
+    statusEl.classList.toggle('is-error', !result.ok);
   }
 
-  const dot = targetItem.querySelector('.dpp-tb-dot') as HTMLElement;
-  if (dot) {
-    dot.classList.add(result.ok ? 'is-done' : 'is-error');
-  }
+  const dot = targetItem.querySelector('.dpp-tb-dot') as HTMLElement | null;
+  if (dot) dot.classList.add(result.ok ? 'is-done' : 'is-error');
 
+  const nameEl = targetItem.querySelector('.dpp-tb-item-name') as HTMLElement | null;
+  if (nameEl) nameEl.classList.add(result.ok ? 'is-done' : 'is-error');
 
-  const nameEl = targetItem.querySelector('.dpp-tb-item-name') as HTMLElement;
-  if (nameEl) {
-    nameEl.classList.add(result.ok ? 'is-done' : 'is-error');
+  // 追加详情区块（独立可滚动），优先 detail，其次序列化 output。
+  const detailText = formatToolResultDetail(result);
+  if (detailText) {
+    const existing = targetItem.querySelector('.dpp-tb-item-detail');
+    if (existing) {
+      existing.textContent = detailText;
+    } else {
+      const detailEl = document.createElement('div');
+      detailEl.className = 'dpp-tb-item-detail';
+      detailEl.textContent = detailText;
+      targetItem.querySelector('.dpp-tb-item-text')?.appendChild(detailEl);
+    }
   }
+}
+
+/** 格式化工具结果详情：优先 detail；失败时从 output 提取；无则空。 */
+function formatToolResultDetail(result: ToolCardResult): string {
+  if (result.detail) {
+    if (!result.ok && looksLikeJson(result.detail)) {
+      const extracted = extractReadableError(result.detail);
+      if (extracted) return extracted;
+    }
+    return result.detail;
+  }
+  return '';
+}
+
+function looksLikeJson(value: string): boolean {
+  const trimmed = value.trimStart();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function extractReadableError(jsonText: string): string | null {
+  try {
+    const parsed = JSON.parse(jsonText);
+    if (typeof parsed === 'string') return parsed;
+    if (Array.isArray(parsed)) {
+      const texts = parsed
+        .filter((item: unknown) => item && typeof item === 'object' && (item as Record<string, unknown>).type === 'text')
+        .map((item: unknown) => (item as Record<string, unknown>).text)
+        .filter((text: unknown): text is string => typeof text === 'string');
+      if (texts.length > 0) return texts.join('\n');
+    }
+    if (parsed && typeof parsed === 'object') {
+      if (typeof parsed.message === 'string') return parsed.message;
+      if (typeof parsed.error === 'string') return parsed.error;
+      if (parsed.error && typeof parsed.error === 'object' && typeof parsed.error.message === 'string') return parsed.error.message;
+    }
+  } catch {
+    /* not valid JSON */
+  }
+  return null;
+}
+
+function setToolBlockTitle(block: HTMLElement, count: number): void {
+  const titleEl = block.querySelector('.dpp-tb-title');
+  if (titleEl) titleEl.textContent = count > 1 ? `工具调用(${count})` : '工具调用';
+}
+
+function getToolBlockItemCount(block: HTMLElement): number {
+  return block.querySelectorAll('.dpp-tb-item').length;
+}
+
+/** block 内是否已存在同名且未完成的 item（避免重复占位）。 */
+function hasUnfinishedItemForName(block: HTMLElement, name: string): boolean {
+  const displayName = getToolDisplayName(name);
+  const items = block.querySelectorAll('.dpp-tb-item');
+  for (const item of items) {
+    const nameEl = item.querySelector('.dpp-tb-item-name');
+    const dot = item.querySelector('.dpp-tb-dot');
+    const isFinished = dot?.classList.contains('is-done') || dot?.classList.contains('is-error');
+    if (!isFinished && (nameEl?.textContent === displayName || nameEl?.textContent === name)) return true;
+  }
+  return false;
 }
 
 function addNewToolItem(block: HTMLElement, call: ToolCall, result: ToolCardResult) {
   const body = block.querySelector('.dpp-tb-body');
   if (!body) return;
-
-  const countEl = block.querySelector('.dpp-tb-count');
-  if (countEl) {
-    const count = parseInt(countEl.textContent || '1', 10) + 1;
-    countEl.textContent = String(count);
-  }
-
-  body.appendChild(createToolBlockItem(call.name, result.detail || result.summary, result.ok ? 'done' : 'error'));
+  body.appendChild(createToolBlockItem(getToolDisplayName(call.name), result.detail || result.summary, result.ok ? 'done' : 'error', formatToolResultDetail(result)));
+  setToolBlockTitle(block, getToolBlockItemCount(block));
 }
 
 function addExecutingToolItem(block: HTMLElement, call: ToolCall) {
   const body = block.querySelector('.dpp-tb-body');
   if (!body) return;
-
-  const countEl = block.querySelector('.dpp-tb-count');
-  if (countEl) {
-    const count = parseInt(countEl.textContent || '1', 10) + 1;
-    countEl.textContent = String(count);
-  }
-
-  body.appendChild(createToolBlockItem(call.name, '执行中...'));
+  body.appendChild(createToolBlockItem(getToolDisplayName(call.name), '执行中...'));
+  setToolBlockTitle(block, getToolBlockItemCount(block));
 }
 
 function renderEarlyToolPlaceholder(name: string, targetMessage?: Element) {
   const displayName = getToolDisplayName(name);
-  if (earlyPlaceholderNames.includes(displayName)) return;
+  if (earlyPlaceholderNames.includes(name)) return;
 
   const existingBlock = targetMessage?.querySelector<HTMLElement>(`.${BLOCK_CLASS}`) ?? null;
   const targetBlock = existingBlock
@@ -485,21 +602,24 @@ function renderEarlyToolPlaceholder(name: string, targetMessage?: Element) {
       : null);
 
   if (targetBlock) {
-    addExecutingToolItem(targetBlock, { name: displayName, invocationName: name, payload: {}, raw: '' });
-    earlyPlaceholderNames.push(displayName);
+    if (!hasUnfinishedItemForName(targetBlock, name)) {
+      addExecutingToolItem(targetBlock, { name: displayName, invocationName: name, payload: {}, raw: '' });
+    }
+    earlyPlaceholderNames.push(name);
     return;
   }
 
   const block = createToolBlock({ name: displayName, invocationName: name, payload: {}, raw: '' });
+  addExecutingToolItem(block, { name: displayName, invocationName: name, payload: {}, raw: '' });
   currentToolBlock = block;
-  earlyPlaceholderNames.push(displayName);
+  earlyPlaceholderNames.push(name);
 
   if (targetMessage instanceof HTMLElement) {
-    targetMessage.appendChild(block);
+    getAssistantResponseHost(targetMessage).appendChild(block);
   } else {
     const lastMsg = getLastAssistantMessage();
     if (lastMsg) {
-      lastMsg.appendChild(block);
+      getAssistantResponseHost(lastMsg).appendChild(block);
     } else {
       document.body.appendChild(block);
     }
@@ -554,6 +674,34 @@ function getLastAssistantMessage(): HTMLElement | null {
   return msgs.length > 0 ? msgs[msgs.length - 1] : null;
 }
 
+/**
+ * 获取 assistant message 内的稳定内容宿主容器（React reconciliation 只替换其内部
+ * markdown 子节点，不会替换宿主本身），工具块挂载到此可避免被 React 重渲染移除。
+ * 参考 deepseek-pp 的 getAssistantResponseHost。
+ */
+function getAssistantResponseHost(message: HTMLElement): HTMLElement {
+  // 优先用 DeepSeek 语义化的 assistant 主内容容器。
+  const hostSelectors = [
+    '.ds-assistant-message-main-content',
+    '._74c0879',
+    '[class*="assistant-message-main-content"]',
+  ];
+  for (const sel of hostSelectors) {
+    const hosts = message.querySelectorAll<HTMLElement>(sel);
+    if (hosts.length > 0) return hosts[hosts.length - 1];
+  }
+  // 回退：markdown 容器的父元素（包裹 markdown 的 content host）。
+  // 思考模式下 DeepSeek 会渲染 reasoning + answer 两个 markdown 块，
+  // 取最后一个（通常为最终回答块）以避免误挂到 reasoning 容器。
+  const markdowns = message.querySelectorAll<HTMLElement>('.ds-markdown, [class*="ds-markdown"]');
+  const lastMarkdown = markdowns.length > 0 ? markdowns[markdowns.length - 1] : null;
+  if (lastMarkdown?.parentElement && lastMarkdown.parentElement !== message) {
+    return lastMarkdown.parentElement;
+  }
+  // 最终回退：message root（与现状一致，不更差）。
+  return message;
+}
+
 function getAssistantMessageRoot(el: Element): Element | null {
   return el.closest(ASSISTANT_MESSAGE_SELECTOR);
 }
@@ -562,7 +710,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
   // Reuse existing tool block for this conversation turn
   if (currentToolBlock && document.contains(currentToolBlock)) {
     const hasEarlyPlaceholder = consumeEarlyPlaceholder(call.name);
-    if (!hasEarlyPlaceholder) {
+    if (!hasEarlyPlaceholder && !hasUnfinishedItemForName(currentToolBlock, call.name)) {
       addExecutingToolItem(currentToolBlock, call);
     }
     const entry = { call, block: currentToolBlock, callId, resolved: false };
@@ -576,6 +724,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
       if (!entry.resolved) {
         entry.resolved = true;
         updateToolBlockWithResult(entry.block, call, result);
+        collectTurnResult(call, result);
       }
     } catch {
       // EXECUTE_TOOL_CALL flow will handle it
@@ -589,10 +738,11 @@ async function handleToolCall(call: ToolCall, callId: number) {
   earlyPlaceholderNames.length = 0;
   const lastMsg = getLastAssistantMessage();
   const block = createToolBlock(call);
+  addExecutingToolItem(block, call);
   currentToolBlock = block;
 
   if (lastMsg) {
-    lastMsg.appendChild(block);
+    getAssistantResponseHost(lastMsg).appendChild(block);
   } else {
     document.body.appendChild(block);
   }
@@ -611,6 +761,7 @@ async function handleToolCall(call: ToolCall, callId: number) {
     if (!entry.resolved) {
       entry.resolved = true;
       updateToolBlockWithResult(block, call, result);
+      collectTurnResult(call, result);
     }
   } catch {
     // EXECUTE_TOOL_CALL flow will handle it
@@ -634,21 +785,143 @@ function trackToolExecution<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
+/** 收集本轮工具执行结果，供 finalizeResponse 续聊决策使用。 */
+function collectTurnResult(call: ToolCall, result: ToolCardResult) {
+  currentTurnResults.push({
+    name: getToolDisplayName(call.name),
+    ok: result.ok,
+    summary: result.summary,
+    detail: result.detail,
+  });
+}
+
 async function finalizeResponse() {
   // Auto-collapse all blocks, persist, and sync memory list
   const blocks = document.querySelectorAll<HTMLElement>(`.${BLOCK_CLASS}`);
-  const hadToolCall = blocks.length > 0;
+  const hasBlocks = blocks.length > 0;
+  const hadToolCallThisTurn = currentTurnResults.length > 0;
 
   currentToolBlock = null;
 
-  if (hadToolCall) {
+  if (hasBlocks) {
     if (activeToolExecutions.size > 0) {
       await Promise.allSettled([...activeToolExecutions]);
     }
     persistToolExecutions();
-    // Refresh memory list in the side panel
-    await refreshMemoryList();
+    if (hadToolCallThisTurn) {
+      // Refresh memory list in the side panel
+      await refreshMemoryList();
+    }
   }
+
+  // 自动续聊：本轮有工具调用时，构造工具结果回传 prompt 并自动发送下一轮。
+  isAutoContinuing = false;
+  if (hadToolCallThisTurn) {
+    if (continuationRound >= MAX_CONTINUATION_ROUNDS) {
+      continuationRound = 0;
+      currentTurnResults.length = 0;
+      return;
+    }
+    continuationRound += 1;
+    const prompt = buildAutoContinuationPrompt(
+      currentTurnResults,
+      currentToolDescriptors.map((d) => d.invocationName),
+    );
+    currentTurnResults.length = 0;
+    await triggerAutoContinue(prompt);
+  } else {
+    // 续聊响应中无工具调用 → 任务完成，重置计数。
+    continuationRound = 0;
+    if (hasBlocks) {
+      // React 可能在流完成后重渲染 message 子树移除 foreign block；
+      // 延迟检查存活，丢失则从持久化记录重挂。
+      const sessionId = getCurrentChatSessionId();
+      setTimeout(() => {
+        if (getCurrentChatSessionId() !== sessionId) return;
+        reinsertLostBlocks();
+      }, 1500);
+    }
+  }
+}
+
+/** 延迟存活检查：若流完成后的 React 重渲染移除了工具块，从持久化记录重挂。 */
+function reinsertLostBlocks() {
+  if (document.querySelectorAll(`.${BLOCK_CLASS}`).length > 0) return;
+  restorePersistedToolBlocks();
+}
+
+/**
+ * 自动续聊：设置挂起的 continuation prompt，然后在 DeepSeek 输入框填入简短标记
+ * 并触发发送。fetch-hook 拦截该请求时会用挂起的 prompt 替换用户输入，
+ * 用户气泡仅显示简短标记文本，工具结果在注入层不显示。
+ */
+async function triggerAutoContinue(prompt: string) {
+  // 1. 通知 main-world 设置挂起的 continuation prompt。
+  window.postMessage({
+    source: 'WebTool-DeepSeek-content',
+    type: 'SET_CONTINUATION_PROMPT',
+    prompt,
+  }, '*');
+
+  // 2. 标记续聊中（TURN_START 时不重置续聊计数）。
+  isAutoContinuing = true;
+
+  // 3. 在输入框填入简短标记并发送。
+  await fillAndSendPrompt('继续');
+}
+
+/**
+ * 填入 DeepSeek 输入框并触发发送。
+ * 优先用 native setter 设值并派发 input 事件触发 React 状态更新；
+ * 发送优先尝试发送按钮点击，回退到 Enter 键事件。
+ */
+async function fillAndSendPrompt(text: string) {
+  const textarea = document.querySelector<HTMLTextAreaElement>('textarea#chat-input')
+    ?? document.querySelector<HTMLTextAreaElement>('textarea');
+  if (!textarea) return;
+
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+  if (setter) {
+    setter.call(textarea, text);
+  } else {
+    textarea.value = text;
+  }
+  textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: text }));
+  textarea.dispatchEvent(new Event('change', { bubbles: true }));
+  textarea.focus();
+
+  // 等待 React 状态更新使发送按钮可用。
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  // 尝试点击发送按钮。
+  const sendBtn = findSendButton();
+  if (sendBtn) {
+    sendBtn.click();
+    return;
+  }
+
+  // 回退：模拟 Enter 键提交。
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+}
+
+/** 查找 DeepSeek 发送按钮。选择器可能随版本变化，覆盖多种候选结构。 */
+function findSendButton(): HTMLElement | null {
+  const candidates: Array<string> = [
+    'div[role="button"] > div > svg',
+    'button[aria-label*="发送"]',
+    'button[aria-label*="Send"]',
+    '.ds-icon-button[type="button"]',
+    'div[role="button"][aria-label*="发送"]',
+  ];
+  for (const sel of candidates) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+
+    // SVG 命中时向上解析真实可点击元素，避免对 SVGElement 调用不存在的 click()。
+    const clickTarget = el.closest<HTMLElement>('button, [role="button"]');
+    if (clickTarget instanceof HTMLElement) return clickTarget;
+  }
+  return null;
 }
 
 // ─── Tool Block Persistence ───────────────────────────────────────
@@ -718,16 +991,18 @@ function persistToolExecutions() {
 
     items.forEach((item) => {
       const nameEl = item.querySelector('.dpp-tb-item-name');
-      const summaryEl = item.querySelector('.dpp-tb-item-summary');
+      const statusEl = item.querySelector('.dpp-tb-item-status');
+      const detailEl = item.querySelector('.dpp-tb-item-detail');
       const dot = item.querySelector('.dpp-tb-dot');
       const isDone = dot?.classList.contains('is-done') ?? false;
       const isError = dot?.classList.contains('is-error') ?? false;
-      const summary = summaryEl?.textContent || '';
+      const summary = statusEl?.textContent || '';
       if ((!isDone && !isError) || isPendingToolSummary(summary)) return;
 
+      const detail = detailEl?.textContent || '';
       executions.push({
         name: nameEl?.textContent || '',
-        result: { ok: isDone, summary, detail: '' },
+        result: { ok: isDone, summary, detail },
       });
     });
 
@@ -787,22 +1062,39 @@ function isRouteRestoreWindowActive(): boolean {
 }
 
 async function restorePersistedToolBlocks() {
+  if (isRestoring) {
+    // 已有恢复 retry 循环在进行（如 900ms 恢复未完），标记待重试后返回，
+    // 避免并发 retry 循环产生竞争。
+    pendingRestoreRetry = true;
+    return;
+  }
+  isRestoring = true;
   try {
     const key = getToolRestoreStorageKey();
     const data = await safeStorageLocalGet(key);
-    if (!data) return;
+    if (!data) { finishRestore(); return; }
     const stored = data[key];
-    if (!Array.isArray(stored)) return;
+    if (!Array.isArray(stored)) { finishRestore(); return; }
 
     const records = (stored as ToolCallRestoreRecord[]).filter(isCurrentChatSessionRecord);
     const hydratedRecords = await hydrateToolCallRestoreRecords(records);
     // 本地持久化恢复通常发生在路由切换后，DOM 可能还没稳定；先内容匹配，延迟几轮后才允许索引兜底。
+    // renderRestoredToolBlocks 在不再 retry 的退出点调 finishRestore 清除 isRestoring。
     renderRestoredToolBlocks(hydratedRecords, key, 0, {
       allowAssistantIndexFallback: true,
       assistantIndexFallbackMinAttempt: 3,
     });
   } catch {
-    // ignore storage errors
+    finishRestore();
+  }
+}
+
+/** 恢复结束：清除进行中标志，并处理待重试的恢复请求。 */
+function finishRestore() {
+  isRestoring = false;
+  if (pendingRestoreRetry) {
+    pendingRestoreRetry = false;
+    void restorePersistedToolBlocks();
   }
 }
 
@@ -820,7 +1112,8 @@ async function hydrateToolCallRestoreRecords(records: ToolCallRestoreRecord[]): 
 function createExecutionRecordFromHistory(call: ToolCall, history: ToolCallHistoryRecord[]): ToolExecutionRecord {
   const matched = history.find((record) => isSameToolCall(record.call, call));
   return {
-    name: call.name,
+    // 统一使用工具中文标题（与实时渲染一致），原始调用名仅作 fallback。
+    name: getToolDisplayName(call.name),
     provider: call.provider,
     descriptorId: call.descriptorId,
     result: matched?.result
@@ -864,7 +1157,7 @@ function renderRestoredToolBlocks(
   options: RestoreRenderOptions = {},
 ) {
   // 恢复过程可能跨路由重试；storage key 变化说明用户已离开当前对话，旧重试必须停止。
-  if (storageKey !== getToolRestoreStorageKey()) return;
+  if (storageKey !== getToolRestoreStorageKey()) { finishRestore(); return; }
   const pendingRecords: ToolCallRestoreRecord[] = [];
   const assistantMessages = findAssistantMessages();
   const usedMessages = new Set<HTMLElement>();
@@ -875,7 +1168,7 @@ function renderRestoredToolBlocks(
     }))
     .filter((record) => record.executions.length > 0);
 
-  if (assistantMessages.length < restorableRecords.length && attempt < 20) {
+  if (assistantMessages.length < restorableRecords.length && attempt < 60) {
     setTimeout(() => renderRestoredToolBlocks(records, storageKey, attempt + 1, options), 300);
     return;
   }
@@ -891,9 +1184,12 @@ function renderRestoredToolBlocks(
     usedMessages.add(targetMessage);
   });
 
-  if (pendingRecords.length > 0 && attempt < 20) {
+  if (pendingRecords.length > 0 && attempt < 60) {
     setTimeout(() => renderRestoredToolBlocks(pendingRecords, storageKey, attempt + 1, options), 300);
+    return;
   }
+  // 不再 retry：恢复结束，清除进行中标志并处理待重试请求。
+  finishRestore();
 }
 
 function findAssistantMessageForToolRecord(
@@ -953,7 +1249,6 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         </span>
         <span class="dpp-tb-title">工具调用</span>
-        <span class="dpp-tb-count"></span>
         <span class="dpp-tb-chevron" aria-hidden="true">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </span>
@@ -961,12 +1256,12 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
       <div class="dpp-tb-body"></div>
     `;
 
-  const countEl = block.querySelector('.dpp-tb-count');
-  if (countEl) countEl.textContent = String(record.executions.length);
+  setToolBlockTitle(block, record.executions.length);
 
   const body = block.querySelector('.dpp-tb-body');
   for (const exec of record.executions) {
-    body?.appendChild(createToolBlockItem(exec.name, exec.result.detail || exec.result.summary, exec.result.ok ? 'done' : 'error'));
+    const detail = formatToolResultDetail(exec.result);
+    body?.appendChild(createToolBlockItem(exec.name, exec.result.detail || exec.result.summary, exec.result.ok ? 'done' : 'error', detail));
   }
 
   const header = block.querySelector('.dpp-tb-header') as HTMLElement;
@@ -978,7 +1273,7 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
     }
   });
 
-  targetMessage.appendChild(block);
+  getAssistantResponseHost(targetMessage).appendChild(block);
   injectBlockStyles();
 }
 
@@ -1154,6 +1449,10 @@ function mergeTextRemovalRanges(ranges: TextRemovalRange[]): TextRemovalRange[] 
 // ─── DOM Observer (background image patching + tool block + tool cleanup) ──
 
 let toolRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+/** 恢复进行中标志，防止并发 retry 循环（ROUTE_CHANGED 的两次恢复触发）。 */
+let isRestoring = false;
+/** 恢复期间有新的恢复请求到达时标记，待当前恢复结束后重试。 */
+let pendingRestoreRetry = false;
 
 function scheduleRestore() {
   if (toolRestoreTimer) clearTimeout(toolRestoreTimer);
@@ -1231,7 +1530,7 @@ function handleTextNodeAdded(node: Node) {
 
 /** 新增元素节点：路由恢复窗口内尝试恢复工具卡片；同时调度工具标记清理。 */
 function handleElementAdded(el: HTMLElement) {
-  if (isRouteRestoreWindowActive() && (getAssistantMessageRoot(el) || getFirstAssistantMessageDescendant(el))) {
+  if (getAssistantMessageRoot(el) || getFirstAssistantMessageDescendant(el)) {
     scheduleRestore();
   }
   if (isInsideToolBlock(el)) return;
@@ -1340,6 +1639,7 @@ function applyPromptUiTheme(preference: ThemePreference) {
   const root = document.documentElement;
   root.dataset.dppTheme = resolvedTheme;
   root.style.setProperty('--dpp-prompt-bg', resolvedTheme === 'dark' ? '#121A2B' : '#FFFFFF');
+  root.style.setProperty('--dpp-prompt-text', resolvedTheme === 'dark' ? '#E5E5E5' : '#1D1D1F');
   root.style.setProperty('--dpp-prompt-border', resolvedTheme === 'dark' ? '#334155' : '#E5E7EB');
   root.style.setProperty('--dpp-prompt-active-bg', resolvedTheme === 'dark' ? '#172033' : '#F7F8FA');
   root.style.setProperty('--dpp-prompt-text-muted', resolvedTheme === 'dark' ? '#94A3B8' : '#9CA3AF');
@@ -1460,219 +1760,151 @@ function applyBackground(config: BackgroundConfig | null) {
 // ─── Tool Block CSS (DeepSeek Thinking-inspired) ──────────────────
 
 const BLOCK_CSS = `
+/* ── 容器：轻量内联，无大卡片背景（对齐 DeepSeek 原生折叠条风格） ── */
 .dpp-tool-block {
-  margin: 8px 0;
-  background: #F0F5FF;
-  border: 1px solid #D6E4FF;
-  border-radius: 12px;
+  margin-top: 8px;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', 'Segoe UI', sans-serif;
   font-size: 13px;
-  overflow: hidden;
-  animation: dpp-tb-in 0.25s ease;
-  transition: border-color 0.2s;
-}
-.dpp-tool-block:hover {
-  border-color: #ADC6FF;
+  color: var(--dpp-prompt-text, #1D1D1F);
 }
 
-@keyframes dpp-tb-in {
-  from { opacity: 0; transform: translateY(-2px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* ── Header (DeepSeek Thinking style) ────────────────────────── */
+/* ── Header：内联单行，muted 色，hover 变深 ─────────────────── */
 .dpp-tb-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: 4px;
   cursor: pointer;
   user-select: none;
-  position: relative;
-  overflow: hidden;
-  transition: background 0.15s;
+  color: var(--dpp-prompt-text-muted, #9CA3AF);
+  font-size: 12px;
+  line-height: 18px;
+  transition: color 0.15s;
 }
-.dpp-tb-header:hover { background: rgba(77, 107, 254, 0.06); }
-.dpp-tb-header:focus { outline: none; border-radius: 12px; }
+.dpp-tb-header:hover { color: var(--dpp-prompt-text, #1D1D1F); }
+.dpp-tb-header:focus { outline: none; }
 
-.dpp-tb-header-ripple {
-  display: none;
-}
+.dpp-tb-header-ripple { display: none; }
 
 .dpp-tb-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: rgba(77, 107, 254, 0.1);
-  color: #4D6BFE;
+  width: 16px;
+  height: 16px;
+  color: var(--dpp-skill-color, #4D6BFE);
   flex-shrink: 0;
 }
 
 .dpp-tb-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #1D1D1F;
-  letter-spacing: 0.01em;
+  font-weight: 500;
+  color: inherit;
+  white-space: nowrap;
 }
 
-.dpp-tb-count {
-  font-size: 10px;
-  color: #4D6BFE;
-  background: rgba(77, 107, 254, 0.1);
-  border-radius: 10px;
-  padding: 0 7px;
-  line-height: 18px;
-  font-weight: 600;
-  min-width: 18px;
-  text-align: center;
-}
+.dpp-tb-count { display: none; }
 
 .dpp-tb-chevron {
-  display: inline-flex;
-  color: #8C8C8C;
-  transition: transform 0.25s ease;
+  width: 12px;
+  height: 12px;
+  color: inherit;
+  transition: transform 0.2s ease;
+  margin-left: 2px;
   flex-shrink: 0;
-  margin-left: auto;
 }
 .dpp-tool-block[data-collapsed="true"] .dpp-tb-chevron { transform: rotate(-90deg); }
 
-/* ── Body ────────────────────────────────────────────────────── */
+/* ── Body：缩进、可折叠 ─────────────────────────────────────── */
 .dpp-tb-body {
-  max-height: 600px;
   overflow: hidden;
-  overflow-y: auto;
-  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  transition: max-height 0.25s ease, opacity 0.2s ease, margin-top 0.2s ease;
+  max-height: 500px;
   opacity: 1;
+  padding-left: 20px;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .dpp-tool-block[data-collapsed="true"] .dpp-tb-body {
   max-height: 0;
   opacity: 0;
+  margin-top: 0;
 }
 
-/* ── Item Row ────────────────────────────────────────────────── */
+/* ── Item：独立小卡片 ────────────────────────────────────────── */
 .dpp-tb-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 4px 14px 8px 14px;
+  padding: 6px 10px;
+  border: 1px solid var(--dpp-prompt-hint-border, #F3F4F6);
+  border-radius: 8px;
+  background: var(--dpp-prompt-active-bg, #F7F8FA);
   font-size: 13px;
   line-height: 1.5;
 }
-.dpp-tb-item:last-child {
-  padding-bottom: 10px;
-}
 
-/* ── Blue Dot with Ripple ────────────────────────────────────── */
 .dpp-tb-dot-wrap {
   position: relative;
-  width: 15px;
-  height: 15px;
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  margin-top: 2px;
 }
 
 .dpp-tb-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #4D6BFE;
-  position: relative;
-  z-index: 1;
+  background: var(--dpp-skill-color, #4D6BFE);
+}
+.dpp-tb-dot.is-done { background: var(--dpp-success-color, #10B981); }
+.dpp-tb-dot.is-error { background: var(--dpp-danger-color, #EF4444); }
+
+.dpp-tb-item-text {
+  flex: 1;
+  min-width: 0;
 }
 
-.dpp-tb-dot.is-error {
-  background: #EF4444;
-}
-
-.dpp-tb-dot.is-error::before,
-.dpp-tb-dot.is-error::after {
-  background: #EF4444;
-  animation-play-state: paused;
-}
-
-.dpp-tb-dot::before,
-.dpp-tb-dot::after {
-  position: absolute;
-  content: '';
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  background: #4D6BFE;
-  animation: dpp-ripple 4s linear 400ms infinite;
-  pointer-events: none;
-}
-.dpp-tb-dot::after {
-  animation: dpp-ripple 4s linear 200ms infinite;
-  animation-delay: 2s;
-}
-
-@keyframes dpp-ripple {
-  0% {
-    transform: scale(1);
-    opacity: 0.2;
-  }
-  100% {
-    transform: scale(4);
-    opacity: 0;
-  }
-}
-
-/* ── Item Text ───────────────────────────────────────────────── */
 .dpp-tb-item-name {
   font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
   font-size: 12px;
-  color: #6B7280;
-  flex-shrink: 0;
+  color: var(--dpp-skill-color, #4D6BFE);
 }
-.dpp-tb-item-name.is-done {
-  color: #1D1D1F;
-  font-weight: 500;
+.dpp-tb-item-name.is-done { color: var(--dpp-prompt-text, #1D1D1F); font-weight: 500; }
+.dpp-tb-item-name.is-error { color: var(--dpp-danger-color, #EF4444); }
+
+.dpp-tb-item-status {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--dpp-success-color, #10B981);
 }
-.dpp-tb-item-name.is-error {
-  color: #EF4444;
+.dpp-tb-item-status.is-error { color: var(--dpp-danger-color, #EF4444); }
+
+/* ── Detail 区块：独立可滚动区 ───────────────────────────────── */
+.dpp-tb-item-detail {
+  margin-top: 4px;
+  padding: 6px 8px;
+  max-height: min(52vh, 420px);
+  border-radius: 8px;
+  background: var(--dpp-skill-bg, #EEF1FF);
+  color: var(--dpp-prompt-text-muted, #9CA3AF);
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
 }
 
+.dpp-tb-item-summary,
+.dpp-tb-item-summary-empty { display: none; }
+
+/* 兼容旧引用，避免外部逻辑引用 class 时样式塌陷 */
 .dpp-tb-item-summary {
   font-size: 12px;
-  color: #4D6BFE;
-  font-weight: 500;
-  margin-left: 2px;
-  overflow: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  min-width: 0;
-  max-height: 260px;
-  overflow-y: auto;
-  padding-bottom: 10px;
-}
-
-/* ── Dark Mode ───────────────────────────────────────────────── */
-@media (prefers-color-scheme: dark) {
-  .dpp-tool-block {
-    background: rgba(77, 107, 254, 0.06);
-    border-color: rgba(77, 107, 254, 0.2);
-  }
-  .dpp-tool-block:hover {
-    border-color: rgba(77, 107, 254, 0.35);
-  }
-  .dpp-tb-header:hover { background: rgba(77, 107, 254, 0.1); }
-  .dpp-tb-icon {
-    background: rgba(77, 107, 254, 0.15);
-    color: #7C8FFF;
-  }
-  .dpp-tb-title { color: #E5E5E5; }
-  .dpp-tb-count {
-    color: #7C8FFF;
-    background: rgba(77, 107, 254, 0.15);
-  }
-  .dpp-tb-chevron { color: #6B7280; }
-  .dpp-tb-item-name { color: #9CA3AF; }
-  .dpp-tb-item-name.is-done { color: #D1D5DB; }
-  .dpp-tb-item-summary { color: #7C8FFF; }
+  color: var(--dpp-skill-color, #4D6BFE);
+  margin-left: 6px;
 }
 `;

@@ -180,6 +180,5 @@ export function formatMemoryLine(m: Memory): string {
 }
 
 export function formatMemoriesBlock(memories: Memory[]): string {
-  if (memories.length === 0) return '(暂无记忆)';
   return memories.map(formatMemoryLine).join('\n');
 }

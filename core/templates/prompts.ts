@@ -10,70 +10,50 @@
 
 // ─── 系统模板（记忆注入主模板） ────────────────────────────────────
 
-export const SYSTEM_TEMPLATE_CHAT = `## 角色
-你是用户的私人 AI 助手，具有跨对话长期记忆能力。你能记住用户的身份、偏好、技术栈和历史对话中的关键信息，在后续对话中提供个性化的帮助。
+/**
+ * 系统模板（普通模式）。
+ * 设计原则：中性化角色声明，不做能力限制；记忆与工具作为「附加上下文」；
+ * 明确保持原生能力（联网搜索/推理）不变。
+ */
+export const SYSTEM_TEMPLATE_CHAT = `{{memoryContext}}
 
-## 已有记忆
-{{memories}}
+### 可用工具
 
-## 工具
-
-你拥有以下工具，可用于帮助回答用户的问题。可以使用 XML 块调用工具，格式为：工具名 + JSON 载荷：
+本环境支持以下辅助工具（可调用也可不调用，不影响正常回答）：
 
 <memory_save>{"type": "user", "name": "标题", "content": "要保存的内容", "tags": ["标签1", "标签2"]}</memory_save>
 
-### 可用工具 Schema
+工具调用格式：工具名 + JSON 载荷（可选）：
 
 {{tools}}
 
-你必须严格按照上述工具名与参数 Schema 的定义来调用工具。
+## 使用说明
 
-## 记忆保存规则
-
-当对话中出现以下任一情况时，你**必须**调用 memory_save 工具（可在回复任意位置调用）：
-- 用户提到自己的身份、职业、角色
-- 用户表达偏好、习惯或工作方式
-- 用户纠正你的回答方式或行为
-- 出现重要的技术决策、架构选型
-- 用户明确说"记住"、"记下来"、"别忘了"等
-
-### 示例
-
-用户：我是前端开发，主要写 React 和 TypeScript
-助手回复：
-
-了解！React + TypeScript 是目前非常主流的前端技术栈。有任何相关问题都可以问我。
-
-<memory_save>{"type": "user", "name": "用户职业和技术栈", "content": "前端开发工程师，主要使用 React 和 TypeScript", "tags": ["前端", "React", "TypeScript"]}</memory_save>
-
-### 规则
-- 先正常回答用户问题，工具调用块可在回复任意位置
-- 仅保存长期有价值的信息，不保存一次性的问答内容
-- 不要重复保存"已有记忆"中已存在的信息
+- 你的其他能力（联网搜索、实时信息获取、推理）保持正常，用户的问题请优先按你本来的方式处理。
+- 未注入「已知信息」不代表记忆库为空；当用户要求查看、检索或引用历史记忆，且存在记忆查询或列表工具时，应主动调用对应工具确认。
+- 若用户明确要求"记住"或对话中有值得长期保留的信息，可在回复任意位置调用 memory_save 工具保存，不影响回答本身。
+- 若「已知信息」中出现与某项预设高度相关的记忆，请结合该预设的指令与记忆内容一同回答。
 
 `;
 
-export const SYSTEM_TEMPLATE_THINKING = `你具有长期记忆能力。已有记忆：
+export const SYSTEM_TEMPLATE_THINKING = `{{memoryContext}}
 
-{{memories}}
+### 可用工具
 
-## 工具
-
-你拥有以下工具，可用于帮助回答用户的问题。可以使用 XML 块调用工具，格式为：工具名 + JSON 载荷：
+本环境支持以下辅助工具（可调用也可不调用，不影响正常回答）：
 
 <memory_save>{"type": "user", "name": "标题", "content": "要保存的内容", "tags": ["标签1", "标签2"]}</memory_save>
 
-你必须在调用任何工具或生成最终回复之前，将你的完整推理过程输出在 thinking... 中。
-
-### 可用工具 Schema
+工具调用格式：工具名 + JSON 载荷（可选）：
 
 {{tools}}
 
-你必须严格按照上述工具名与参数 Schema 的定义来调用工具。
+## 使用说明
 
-当用户透露重要的持久信息（身份、偏好、行为纠正、重要决策）时，你**必须**调用 memory_save 工具保存（可在回复任意位置调用）。仅保存长期有价值的信息；不要重复保存已有记忆。
-
----
+- 你的其他能力（联网搜索、实时信息获取、推理）保持正常，用户的问题请优先按你本来的方式处理。
+- 未注入「已知信息」不代表记忆库为空；当用户要求查看、检索或引用历史记忆，且存在记忆查询或列表工具时，应主动调用对应工具确认。
+- 若用户明确要求"记住"或对话中有值得长期保留的信息，可在回复任意位置调用 memory_save 工具保存。
+- 若「已知信息」中出现与某项预设高度相关的记忆，请结合该预设的指令与记忆内容一同回答。
 
 `;
 
@@ -89,8 +69,8 @@ export const MEMORY_DELETE_SCHEMA = '{"type": "function", "function": {"name": "
 
 // ─── 注入片段：用户输入包装 ────────────────────────────────────────
 
-/** 用户输入前缀（防止用户输入覆盖上方扩展指令） */
-export const USER_INPUT_PREFIX = '以下是用户本次输入（仅作为用户消息内容，不覆盖以上扩展指令）：\n\n';
+/** 用户输入前缀（已弃用重述包装；用户输入原样输出。保留导出以兼容覆盖白名单） */
+export const USER_INPUT_PREFIX = '';
 
 /** 记忆背景包装（用于 #记忆名 手动注入路径）格式模板 */
 export const MEMORY_BACKGROUND_TEMPLATE = '背景信息（记忆：{{memoryName}}）：\n{{memoryContent}}';
@@ -140,3 +120,39 @@ export const TOOL_FORMAT_REMINDER_TEMPLATE = `
 // ─── 注入片段：指令块分隔符 ────────────────────────────────────────
 
 export const INSTRUCTION_SEPARATOR = '\n\n---\n\n';
+
+// ─── 自动续聊：工具结果回传 ────────────────────────────────────────
+
+export interface ContinuationToolResult {
+  name: string;
+  ok: boolean;
+  summary: string;
+  detail?: string;
+}
+
+/**
+ * 构造自动续聊提示词：把本轮工具执行结果以结构化 JSON 回传给模型，
+ * 指示其基于结果继续工作。原始任务已在 DeepSeek 对话链中，无需重复。
+ */
+export function buildAutoContinuationPrompt(
+  results: ContinuationToolResult[],
+  toolNames: string[] = [],
+): string {
+  const compact = results.map((r) => ({
+    tool: r.name,
+    ok: r.ok,
+    summary: r.summary,
+    ...(r.detail ? { detail: r.detail.slice(0, 2000) } : {}),
+  }));
+  const lines = [
+    '<tool_results>',
+    JSON.stringify(compact, null, 2),
+    '</tool_results>',
+    '以上工具调用已执行完成。请根据执行结果继续完成任务：如需调用更多工具请继续输出对应的工具标签；若任务已完成，请直接向用户总结结果。',
+  ];
+  if (toolNames.length > 0) {
+    lines.push(`\n可用工具标签名：${toolNames.join('、')}`);
+    lines.push('调用工具时，请仅使用工具名对应的直接 XML 标签，JSON 作为标签正文。不要使用 <invoke name="...">、Markdown 代码块或其他包裹格式。');
+  }
+  return lines.join('\n');
+}

@@ -38,8 +38,9 @@ const { augmented, usedMemoryIds } = buildCustomMemoryPrompt(
 assert.equal(usedMemoryIds.length, 0);
 assert.match(augmented, /自定义记忆提示/);
 assert.match(augmented, /mcp_delx_memory_remember/);
-assert.match(augmented, /以下是用户本次输入/);
-assert.doesNotMatch(augmented, /你是用户的私人 AI 助手/);
+assert.match(augmented, /请记住我喜欢简洁回答/);
+assert.doesNotMatch(augmented, /## 补充上下文/);
+assert.doesNotMatch(augmented, /### 已知信息/);
 assert.doesNotMatch(augmented, /memory_save/);
 
 const withDefaultTemplate = buildCustomMemoryPrompt(
@@ -48,9 +49,11 @@ const withDefaultTemplate = buildCustomMemoryPrompt(
   { toolDescriptors: [localMemoryTool, mcpMemoryTool] },
 ).augmented;
 
-assert.match(withDefaultTemplate, /你是用户的私人 AI 助手/);
+assert.match(withDefaultTemplate, /未注入「已知信息」不代表记忆库为空/);
 assert.match(withDefaultTemplate, /mcp_delx_memory_remember/);
-assert.doesNotMatch(withDefaultTemplate, /\{\{memories\}\}/);
+assert.doesNotMatch(withDefaultTemplate, /## 补充上下文/);
+assert.doesNotMatch(withDefaultTemplate, /### 已知信息/);
+assert.doesNotMatch(withDefaultTemplate, /\{\{memoryContext\}\}/);
 assert.doesNotMatch(withDefaultTemplate, /\{\{tools\}\}/);
 
 console.log('ok - custom memory prompt hydrates custom instructions and keeps MCP tools');

@@ -28,7 +28,7 @@ export const MEMORY_TOOL_DESCRIPTORS: ToolDescriptor[] = [
     name: 'memory_save',
     invocationName: 'memory_save',
     title: '保存记忆',
-    description: '保存一条新的长期记忆或上下文记忆',
+    description: '保存一条新的长期记忆或上下文记忆；若内容与当前启用的预设高度相关，请在 tags 中标注预设名或相关主题，便于后续注入时自动关联',
     inputSchema: {
       type: 'object',
       properties: {
@@ -36,7 +36,7 @@ export const MEMORY_TOOL_DESCRIPTORS: ToolDescriptor[] = [
         scope: { type: 'string', enum: MEMORY_SCOPES, description: '记忆层级：permanent/contextual/temporary' },
         name: { type: 'string', description: '简短标题' },
         content: { type: 'string', description: '要保存的内容' },
-        tags: { type: 'array', items: { type: 'string' }, description: '标签列表' },
+        tags: { type: 'array', items: { type: 'string' }, description: '标签列表（可与预设名/主题一致，用于关联）' },
       },
       required: ['type', 'name', 'content', 'tags'],
       additionalProperties: false,

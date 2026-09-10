@@ -47,6 +47,8 @@ import {
   unassignSessionsFromCategory,
 } from '../core/conversation/store';
 import { getMemoryConfig, saveMemoryConfig, type MemoryConfig } from '../core/memory/config';
+import { appendInjectionEvent, clearInjectionEvents, getInjectionEvents, type InjectionEvent } from '../core/inject/events';
+import { getTemplateOverrides, resetTemplateOverrides, saveTemplateOverrides, type TemplateOverrides } from '../core/templates/overrides';
 import { THEME_STORAGE_KEY, normalizeThemePreference, type ThemePreference } from '../core/theme';
 import type { BackgroundConfig, ConversationCategory, ConversationMessage, ConversationSession, McpServerCreateInput, McpServerUpdateInput, Memory, ModelType, NewMemory, Skill, SyncConfig, SystemPromptPreset, ToolCall } from '../core/types';
 
@@ -289,6 +291,39 @@ async function handleMessage(
 
     case 'GET_MEMORY_CONFIG':
       return getMemoryConfig();
+
+    case 'GET_TEMPLATE_OVERRIDES':
+      return getTemplateOverrides();
+
+    case 'SET_TEMPLATE_OVERRIDES': {
+      const overrides = message.payload as TemplateOverrides;
+      await saveTemplateOverrides(overrides);
+      await broadcastTemplateOverridesUpdate();
+      return { ok: true };
+    }
+
+    case 'RESET_TEMPLATE_OVERRIDES': {
+      await resetTemplateOverrides();
+      await broadcastTemplateOverridesUpdate();
+      return { ok: true };
+    }
+
+    case 'RECORD_INJECTION_EVENT': {
+      const event = message.payload as InjectionEvent;
+      if (!event?.kind || typeof event.title !== 'string') return { ok: false };
+      await appendInjectionEvent(event);
+      chrome.runtime.sendMessage({ type: 'INJECTION_EVENTS_UPDATED' }).catch(() => {});
+      return { ok: true };
+    }
+
+    case 'GET_INJECTION_EVENTS':
+      return getInjectionEvents();
+
+    case 'CLEAR_INJECTION_EVENTS': {
+      await clearInjectionEvents();
+      chrome.runtime.sendMessage({ type: 'INJECTION_EVENTS_UPDATED' }).catch(() => {});
+      return { ok: true };
+    }
 
     case 'SET_MEMORY_CONFIG': {
       const config = message.payload as MemoryConfig;
@@ -579,4 +614,10 @@ async function broadcastToolDescriptorsUpdate(excludeTabId?: number) {
 
 async function broadcastToolCallHistoryUpdate(excludeTabId?: number) {
   await broadcastToTabs({ type: 'TOOL_CALL_HISTORY_UPDATED' }, excludeTabId);
+}
+
+async function broadcastTemplateOverridesUpdate() {
+  const overrides = await getTemplateOverrides();
+  await broadcastToTabs({ type: 'TEMPLATES_UPDATED', overrides });
+  chrome.runtime.sendMessage({ type: 'TEMPLATES_UPDATED', overrides }).catch(() => {});
 }

@@ -1,8 +1,11 @@
 import { DEEPSEEK_API_URL } from '../constants';
 import { INSTRUCTION_SEPARATOR, MEMORY_BACKGROUND_TEMPLATE } from '../templates';
+import { TEMPLATE_KEYS, type TemplateOverrides } from '../templates/overrides';
+import { createInjectionEvent, type InjectionEvent, type InjectionKind } from '../inject/events';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, hasXmlToolMarker } from '../tool';
 import type { Memory, ModelType, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, Skill, ToolDescriptor } from '../types';
-import { buildAugmentedPrompt, buildCustomMemoryPrompt, buildInstructionOnlyPrompt, fillTemplate, renderUserInputBlock } from '../memory/injector';
+import { buildAugmentedPrompt, buildCustomMemoryPrompt, buildInstructionOnlyPrompt, buildLightweightMemoryPrompt, fillTemplate, renderUserInputBlock, resolveTemplate, setTemplateOverrides } from '../memory/injector';
+import { findPresetForMemory, memoryPresetOverlap, PRESET_LINK_THRESHOLD } from '../memory/preset-link';
 import { parseSkillCommand } from '../skill/parser';
 import { extractTextFromParsed, isStreamFinishedFromParsed, parseSSEChunk, parseSSEData } from './sse-parser';
 import { extractToolCalls, stripToolCalls } from './tool-parser';
@@ -12,6 +15,14 @@ const API_PATH = new URL(DEEPSEEK_API_URL).pathname;
 const HISTORY_PATH = '/api/v0/chat/history_messages';
 const SINGLE_INJECTION_STORAGE_KEY = 'webtool_deepseek_single_injection_sessions';
 const PENDING_SINGLE_INJECTION_SESSION = '__pending_chat_session__';
+
+/** 会话级注入去重记录：同一对话后续轮次跳过已注入的系统模板/预设/工具 schema。 */
+interface SessionInjectionRecord {
+  systemTemplateInjected: boolean;
+  presetInjected: boolean;
+  presetContentHash: string | null;
+  injectedMemoryIds: Set<number>;
+}
 
 interface HookState {
   memories: Memory[];
@@ -24,14 +35,20 @@ interface HookState {
   singleMemoryInjection: boolean;
   customMemoryEnabled: boolean;
   customMemoryPrompt: string;
+  templateOverrides?: TemplateOverrides;
   _lastChatSessionId: string | null;
   _singleInjectionSessionIds: Set<string>;
+  _sessionInjectionRecords: Map<string, SessionInjectionRecord>;
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
+  onTurnStart: () => void;
   onMemoriesUsed: (ids: number[]) => void;
   onToolCallExecuted: (call: ToolCall) => Promise<ToolCardResult>;
   onToolCallsRestored: (records: ToolCallRestoreRecord[]) => void;
   onSkillUsed: (name: string) => void;
+  onInjectionEvent?: (event: InjectionEvent) => void;
+  /** 续聊请求挂起的 continuation prompt；非空时跳过常规注入并以此替换用户输入。 */
+  pendingContinuationPrompt: string | null;
 }
 
 let hookState: HookState = {
@@ -47,12 +64,15 @@ let hookState: HookState = {
   customMemoryPrompt: '',
   _lastChatSessionId: null,
   _singleInjectionSessionIds: new Set(),
+  _sessionInjectionRecords: new Map(),
   onToolCall: () => {},
   onResponseComplete: () => {},
+  onTurnStart: () => {},
   onMemoriesUsed: () => {},
   onToolCallExecuted: async () => ({ ok: true, summary: '已识别' }),
   onToolCallsRestored: () => {},
   onSkillUsed: () => {},
+  pendingContinuationPrompt: null,
 };
 
 function readSingleInjectionSessionIds(): Set<string> {
@@ -94,6 +114,27 @@ function getSingleInjectionSessionId(chatSessionId: string | null): string {
   return chatSessionId ?? PENDING_SINGLE_INJECTION_SESSION;
 }
 
+/** 预设内容指纹：变更后需重新注入。 */
+function presetContentHash(preset: SystemPromptPreset | null): string | null {
+  if (!preset) return null;
+  return `${preset.id ?? preset.name}:${preset.content.length}`;
+}
+
+/** 取/建会话注入去重记录。 */
+function getOrCreateSessionRecord(sessionId: string): SessionInjectionRecord {
+  let record = hookState._sessionInjectionRecords.get(sessionId);
+  if (!record) {
+    record = {
+      systemTemplateInjected: false,
+      presetInjected: false,
+      presetContentHash: null,
+      injectedMemoryIds: new Set(),
+    };
+    hookState._sessionInjectionRecords.set(sessionId, record);
+  }
+  return record;
+}
+
 function shouldUseSingleMemoryInjection(): boolean {
   return hookState.singleMemoryInjection && !hookState.activePreset;
 }
@@ -102,6 +143,37 @@ function syncConcreteSingleInjectionSession(chatSessionId: string | null, hasCon
   if (chatSessionId !== null && hasConcreteParentMessage) {
     bindPendingSingleInjectionSession(chatSessionId);
   }
+}
+
+/** 上报一次注入事件（记忆/预设/提示词/MCP），供 sidepanel 时间轴展示。 */
+function emitInjectionEvent(kind: InjectionKind, title: string, detail?: string, payload?: string) {
+  const event = createInjectionEvent({
+    kind,
+    title,
+    ...(detail ? { detail } : {}),
+    ...(payload ? { payload } : {}),
+    sessionId: hookState._lastChatSessionId,
+  });
+  try {
+    hookState.onInjectionEvent?.(event);
+  } catch {
+    // 事件上报失败不影响注入主流程
+  }
+}
+
+/** 当前工具描述符中是否包含 MCP 工具。 */
+/** 收集与活动预设高度重合的记忆 id（供注入标注用）。 */
+function collectPresetRelatedMemoryIds(memories: Memory[], preset: SystemPromptPreset): Record<string, number[]> {
+  const ids: number[] = [];
+  for (const memory of memories) {
+    if (memory.id == null) continue;
+    if (memoryPresetOverlap(memory, preset) >= PRESET_LINK_THRESHOLD) ids.push(memory.id);
+  }
+  return ids.length > 0 ? { [preset.name]: ids } : {};
+}
+
+function hasMcpTools(): boolean {
+  return hookState.toolDescriptors.some((descriptor) => descriptor.provider?.kind === 'mcp');
 }
 
 function shouldSkipSingleMemoryInjection(isFirstMessage: boolean, sessionId: string): boolean {
@@ -119,6 +191,12 @@ export function bindPendingSingleInjectionSession(sessionId: string) {
   if (!hookState._singleInjectionSessionIds.has(PENDING_SINGLE_INJECTION_SESSION)) return;
   markSingleInjectionSession(sessionId);
   deleteSingleInjectionSession(PENDING_SINGLE_INJECTION_SESSION);
+  // 同步迁移 pending 的去重记录到真实会话 id。
+  const pending = hookState._sessionInjectionRecords.get(PENDING_SINGLE_INJECTION_SESSION);
+  if (pending) {
+    hookState._sessionInjectionRecords.set(sessionId, pending);
+    hookState._sessionInjectionRecords.delete(PENDING_SINGLE_INJECTION_SESSION);
+  }
 }
 
 let storedHistoryRaw: { json: unknown; sessionId: string | null } | null = null;
@@ -130,6 +208,18 @@ interface ToolStreamFilterState {
 
 export function updateHookState(partial: Partial<HookState>) {
   hookState = { ...hookState, ...partial };
+  // 模板覆盖状态同步到注入器（内存态，避免注入路径读 storage）。
+  if (partial.templateOverrides !== undefined || !hasAppliedOverrides) {
+    applyTemplateOverrides();
+  }
+}
+
+let hasAppliedOverrides = false;
+
+function applyTemplateOverrides() {
+  const overrides = hookState.templateOverrides ?? {};
+  setTemplateOverrides(overrides);
+  hasAppliedOverrides = true;
 }
 
 /** Re-process the stored raw history response with the current (now-populated) tool descriptors. */
@@ -173,6 +263,7 @@ function hookFetch() {
     if (!modified) return savedFetch.call(this, input, init);
 
     init = { ...init, body: modified };
+    hookState.onTurnStart();
     return interceptFetchResponse(savedFetch.call(this, input, init));
   };
 }
@@ -192,6 +283,7 @@ function hookXHR() {
     if (url && isChatCompletionURL(url) && typeof body === 'string') {
       const modified = modifyRequestBody(body);
       if (modified) {
+        hookState.onTurnStart();
         setupXHRResponseInterceptor(this);
         return origSend.call(this, modified);
       }
@@ -215,6 +307,13 @@ function modifyRequestBody(bodyStr: string): string | null {
   const originalPrompt = (body.prompt as string) || '';
   if (!originalPrompt) return null;
 
+  // 自动续聊请求：用挂起的 continuation prompt 替换用户输入，跳过常规记忆/预设注入。
+  if (hookState.pendingContinuationPrompt) {
+    body.prompt = hookState.pendingContinuationPrompt;
+    hookState.pendingContinuationPrompt = null;
+    return JSON.stringify(body);
+  }
+
   const thinkingEnabled = body.thinking_enabled === true;
   const chatSessionId = typeof body.chat_session_id === 'string' ? body.chat_session_id : null;
   const hasConcreteParentMessage = body.parent_message_id !== null && body.parent_message_id !== undefined;
@@ -235,17 +334,23 @@ function modifyRequestBody(bodyStr: string): string | null {
   if (memInvocation) {
     const { memory, args } = memInvocation;
     const memoryInstruction = wrapMemoryInput(memory.name, memory.content, '');
+    // 记忆内容与活动预设高度重合时，关联注入对应的预设指令。
+    const linkedPreset = findPresetForMemory(memory, hookState.activePreset ? [hookState.activePreset] : []);
+    const linkedInstruction = linkedPreset
+      ? `<关联预设：${linkedPreset.name}（记忆内容与该预设高度重合，请结合其指令回答）>\n\n${linkedPreset.content}`
+      : '';
     const { augmented } = buildAugmentedPrompt(args, [], {
       thinkingEnabled,
       tokenBudget: hookState.memoryTokenBudget,
       toolDescriptors: hookState.toolDescriptors,
-      instructionBlock: joinInstructionBlocks(presetInstruction, memoryInstruction),
+      instructionBlock: joinInstructionBlocks(presetInstruction, memoryInstruction, linkedInstruction),
     });
 
     body.prompt = augmented;
     if (memory.id != null) {
       hookState.onMemoriesUsed([memory.id]);
     }
+    emitInjectionEvent('memory', `记忆注入：${memory.name}`, linkedPreset ? `已关联预设「${linkedPreset.name}」` : (hasMcpTools() ? '含 MCP 工具描述符' : undefined), augmented);
     return JSON.stringify(body);
   }
 
@@ -258,6 +363,7 @@ function modifyRequestBody(bodyStr: string): string | null {
         const { augmented } = buildCustomMemoryModePrompt(resolved.userInput, presetInstruction, resolved.instructions);
         body.prompt = augmented;
         hookState.onSkillUsed(invocation.skillName);
+        emitInjectionEvent('skill', `技能注入：/${invocation.skillName}`, '自定义记忆模式', augmented);
         return JSON.stringify(body);
       }
 
@@ -276,6 +382,7 @@ function modifyRequestBody(bodyStr: string): string | null {
         hookState.onMemoriesUsed(usedMemoryIds);
       }
       hookState.onSkillUsed(invocation.skillName);
+      emitInjectionEvent('skill', `技能注入：/${invocation.skillName}`, usedMemoryIds.length > 0 ? `关联记忆 ${usedMemoryIds.length} 条` : undefined, augmented);
       return JSON.stringify(body);
     }
   }
@@ -286,41 +393,107 @@ function modifyRequestBody(bodyStr: string): string | null {
   if (hookState.customMemoryEnabled) {
     const { augmented } = buildCustomMemoryModePrompt(originalPrompt, presetInstruction);
     body.prompt = augmented;
+    emitInjectionEvent('prompt', '自定义记忆模板注入', presetInstruction ? '含预设指令' : undefined, augmented);
     return JSON.stringify(body);
   }
 
-  if (hookState.activePreset) {
-    if (isPresetMemoryEnabled()) {
-      targetMemories = resolveActivePresetMemories();
-    } else {
-      const { augmented } = buildPromptForInstructionMode(originalPrompt, presetInstruction, false, [], thinkingEnabled);
-      body.prompt = augmented;
+  // ── 会话级注入去重 ──
+  // 同一对话后续轮次：首轮已注入完整系统模板（含工具 schema）+预设，历史已携带，
+  // 后续轮次仅补充本轮新选中的记忆条目（轻量包装），避免重复注入。
+  const singleInjectionSessionId = getSingleInjectionSessionId(chatSessionId);
+  syncConcreteSingleInjectionSession(chatSessionId, hasConcreteParentMessage);
+
+  // 刷新页面后会话 id 在持久化集合但无内存记录→首轮已注入过，直接跳过。
+  if (hookState._singleInjectionSessionIds.has(singleInjectionSessionId) && !hookState._sessionInjectionRecords.has(singleInjectionSessionId)) {
+    // singleMemoryInjection=完全跳过模式（兼容旧配置）。
+    if (shouldUseSingleMemoryInjection()) {
+      body.prompt = originalPrompt;
       return JSON.stringify(body);
     }
   }
 
-  const singleInjectionSessionId = getSingleInjectionSessionId(chatSessionId);
-  // 普通自动注入才应用单次限制；预设路径要继续携带预设内容与其关联记忆。
-  syncConcreteSingleInjectionSession(chatSessionId, hasConcreteParentMessage);
-  if (shouldSkipSingleMemoryInjection(isFirstMessage, singleInjectionSessionId)) {
-    body.prompt = originalPrompt;
+  const sessionRecord = getOrCreateSessionRecord(singleInjectionSessionId);
+  const needSystemTemplate = !sessionRecord.systemTemplateInjected;
+  const currentPresetHash = presetContentHash(hookState.activePreset);
+  const needPreset = Boolean(presetInstruction) && (!sessionRecord.presetInjected || sessionRecord.presetContentHash !== currentPresetHash);
+
+  // 仅指令预设路径（无记忆）。
+  if (hookState.activePreset && !isPresetMemoryEnabled()) {
+    if (needPreset || needSystemTemplate) {
+      const { augmented } = buildPromptForInstructionMode(originalPrompt, presetInstruction, false, [], thinkingEnabled);
+      body.prompt = augmented;
+      sessionRecord.presetInjected = true;
+      sessionRecord.presetContentHash = currentPresetHash;
+      markSingleInjectionSession(singleInjectionSessionId);
+      emitInjectionEvent('preset', `预设注入：${hookState.activePreset.name}`, '仅指令', augmented);
+    } else {
+      body.prompt = originalPrompt;
+      emitInjectionEvent('preset', `预设注入：${hookState.activePreset.name}`, '去重跳过', originalPrompt);
+    }
     return JSON.stringify(body);
   }
 
-  const { augmented, usedMemoryIds } = buildAugmentedPrompt(originalPrompt, targetMemories, {
-    thinkingEnabled,
-    identityOnly,
-    tokenBudget: hookState.memoryTokenBudget,
-    toolDescriptors: hookState.toolDescriptors,
-    instructionBlock: presetInstruction,
-  });
+  // 记忆 + 预设 + 系统模板路径（含 presetMemoryEnabled 与普通自动注入）。
+  if (hookState.activePreset && isPresetMemoryEnabled()) {
+    targetMemories = resolveActivePresetMemories();
+  }
+
+  const relatedIds = hookState.activePreset
+    ? collectPresetRelatedMemoryIds(targetMemories, hookState.activePreset)
+    : undefined;
+  const hasRelatedMark = relatedIds ? Object.values(relatedIds).some((ids) => ids.length > 0) : false;
+
+  let augmented: string;
+  let usedMemoryIds: number[];
+
+  if (needSystemTemplate) {
+    // 首轮：完整系统模板（记忆+工具 schema+预设+格式提醒）。
+    const result = buildAugmentedPrompt(originalPrompt, targetMemories, {
+      thinkingEnabled,
+      identityOnly,
+      tokenBudget: hookState.memoryTokenBudget,
+      toolDescriptors: hookState.toolDescriptors,
+      instructionBlock: needPreset ? presetInstruction : '',
+      presetRelatedMemoryIds: relatedIds,
+    });
+    augmented = result.augmented;
+    usedMemoryIds = result.usedMemoryIds;
+    sessionRecord.systemTemplateInjected = true;
+    if (needPreset) {
+      sessionRecord.presetInjected = true;
+      sessionRecord.presetContentHash = currentPresetHash;
+    }
+  } else {
+    // 后续轮次：轻量补充——仅本轮新选中记忆 + 未注入的预设变更。
+    const result = buildLightweightMemoryPrompt(originalPrompt, targetMemories, {
+      instructionBlock: needPreset ? presetInstruction : '',
+      tokenBudget: hookState.memoryTokenBudget,
+      excludeMemoryIds: sessionRecord.injectedMemoryIds,
+      toolDescriptors: hookState.toolDescriptors,
+    });
+    augmented = result.augmented;
+    usedMemoryIds = result.usedMemoryIds;
+    if (needPreset) {
+      sessionRecord.presetInjected = true;
+      sessionRecord.presetContentHash = currentPresetHash;
+    }
+  }
+
   body.prompt = augmented;
-  recordSingleMemoryInjection(singleInjectionSessionId);
+  for (const id of usedMemoryIds) if (id) sessionRecord.injectedMemoryIds.add(id);
+  markSingleInjectionSession(singleInjectionSessionId);
 
   if (usedMemoryIds.length > 0) {
     hookState.onMemoriesUsed(usedMemoryIds);
   }
 
+  const detailParts = [
+    usedMemoryIds.length > 0 ? `命中记忆 ${usedMemoryIds.length} 条` : null,
+    needPreset ? '含预设指令' : null,
+    hasRelatedMark ? '含预设关联标注' : null,
+    needSystemTemplate ? (hasMcpTools() ? '含 MCP 工具描述符' : null) : '去重·轻量补充',
+  ].filter(Boolean);
+  emitInjectionEvent('memory', '记忆注入', detailParts.join('；') || undefined, augmented);
   return JSON.stringify(body);
 }
 
@@ -994,7 +1167,7 @@ function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation
 }
 
 function wrapMemoryInput(memoryName: string, memoryContent: string, userInput: string): string {
-  const header = fillTemplate(MEMORY_BACKGROUND_TEMPLATE, {
+  const header = fillTemplate(resolveTemplate('MEMORY_BACKGROUND_TEMPLATE', MEMORY_BACKGROUND_TEMPLATE), {
     memoryName,
     memoryContent,
   });
