@@ -1,4 +1,4 @@
-import { deleteMemory, getMemoryById, saveMemory, updateMemory } from '../memory/store';
+import { deleteMemory, getAllMemories, getMemoryById, saveMemory, updateMemory } from '../memory/store';
 import { executeMcpToolCall, getMcpToolDescriptors, refreshMcpServerDiscovery } from '../mcp/discovery';
 import { getAllMcpServers } from '../mcp/store';
 import type { Memory, NewMemory } from '../types';
@@ -7,6 +7,9 @@ import { MEMORY_TOOL_DESCRIPTORS, executeMemoryToolCall, isMemoryToolName, type 
 import type { ToolCall, ToolDescriptor, ToolExecutionTrigger, ToolResult } from './types';
 
 const memoryRuntime: MemoryToolRuntime = {
+  async listMemories() {
+    return getAllMemories();
+  },
   async saveMemory(input: NewMemory) {
     const id = await saveMemory(input);
     return { id };

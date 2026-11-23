@@ -11,10 +11,11 @@ export const MEMORY_TOOL_PROVIDER: ToolProviderIdentity = {
   transport: 'in_process',
 };
 
-export const MEMORY_TOOL_NAMES = ['memory_save', 'memory_update', 'memory_delete'] as const;
+export const MEMORY_TOOL_NAMES = ['memory_list', 'memory_get', 'memory_save', 'memory_update', 'memory_delete'] as const;
 export type MemoryToolName = typeof MEMORY_TOOL_NAMES[number];
 
 export interface MemoryToolRuntime {
+  listMemories(): Promise<Memory[]>;
   saveMemory(input: NewMemory): Promise<{ id: number } | null>;
   getMemoryById(id: number): Promise<Memory | null>;
   updateMemory(memory: Memory): Promise<void>;
@@ -23,12 +24,47 @@ export interface MemoryToolRuntime {
 
 export const MEMORY_TOOL_DESCRIPTORS: ToolDescriptor[] = [
   {
+    id: 'local:memory:memory_list',
+    provider: MEMORY_TOOL_PROVIDER,
+    name: 'memory_list',
+    invocationName: 'memory_list',
+    title: '列出记忆标题',
+    description: '列出记忆库中的记忆标题（含 ID 与类型，不含正文）。可用 query 按标题/标签过滤，limit 限制条数（默认 50，上限 200）。只读，不修改记忆。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '可选：按标题或标签过滤' },
+        limit: { type: 'integer', description: '可选：返回条数上限（默认 50）' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+    execution: { mode: 'auto', enabled: true, risk: 'low' },
+  },
+  {
+    id: 'local:memory:memory_get',
+    provider: MEMORY_TOOL_PROVIDER,
+    name: 'memory_get',
+    invocationName: 'memory_get',
+    title: '读取记忆全文',
+    description: '读取单条记忆的完整正文、标签与元数据。参数 key 传记忆 ID（如 "89" 或 "#89"）或标题；标题支持唯一前缀匹配。只读，不修改记忆。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: '记忆 ID（如 "89"、"#89"）或标题' },
+      },
+      required: ['key'],
+      additionalProperties: false,
+    },
+    execution: { mode: 'auto', enabled: true, risk: 'low' },
+  },
+  {
     id: 'local:memory:memory_save',
     provider: MEMORY_TOOL_PROVIDER,
     name: 'memory_save',
     invocationName: 'memory_save',
     title: '保存记忆',
-    description: '保存一条新的长期记忆或上下文记忆；若内容与当前启用的预设高度相关，请在 tags 中标注预设名或相关主题，便于后续注入时自动关联',
+    description: '保存一条新的长期记忆或上下文记忆；保存后默认开启静默注入（后续对话自动带入）；若内容与当前启用的预设高度相关，请在 tags 中标注预设名或相关主题，便于后续注入时自动关联',
     inputSchema: {
       type: 'object',
       properties: {
@@ -87,10 +123,92 @@ export function isMemoryToolName(name: string): name is MemoryToolName {
 }
 
 export async function executeMemoryToolCall(runtime: MemoryToolRuntime, call: ToolCall): Promise<ToolResult> {
+  if (call.name === 'memory_list') return listMemoryEntries(runtime, call);
+  if (call.name === 'memory_get') return readMemoryEntry(runtime, call);
   if (call.name === 'memory_save') return saveMemory(runtime, call);
   if (call.name === 'memory_update') return updateExistingMemory(runtime, call);
   if (call.name === 'memory_delete') return deleteExistingMemory(runtime, call);
   return failure(call, 'memory_tool_unsupported', '不支持的记忆工具', `Unsupported memory tool: ${call.name}`, false);
+}
+
+const MEMORY_LIST_DEFAULT_LIMIT = 50;
+const MEMORY_LIST_MAX_LIMIT = 200;
+
+/** 列表行：只给 ID / 类型 / 标题（正文与标签走 memory_get）。 */
+function formatListLine(memory: Memory): string {
+  const id = memory.id != null ? `#${memory.id}` : '#?';
+  return `- ${id} [${memory.type}] ${memory.name}`;
+}
+
+async function listMemoryEntries(runtime: MemoryToolRuntime, call: ToolCall): Promise<ToolResult> {
+  const query = stringValue(call.payload.query).trim().toLowerCase();
+  const requested = numberValue(call.payload.limit);
+  const limit = Math.min(requested > 0 ? requested : MEMORY_LIST_DEFAULT_LIMIT, MEMORY_LIST_MAX_LIMIT);
+
+  const all = await runtime.listMemories();
+  const matched = query
+    ? all.filter((memory) => memory.name.toLowerCase().includes(query)
+      || memory.tags.some((tag) => tag.toLowerCase().includes(query)))
+    : all;
+  const rows = matched.slice(0, limit);
+
+  if (rows.length === 0) {
+    return success(call, query ? '没有匹配的记忆' : '记忆库为空', rows.length === 0 ? '' : undefined, { count: 0, items: [] });
+  }
+  const lines = rows.map(formatListLine).join('\n');
+  const suffix = matched.length > rows.length ? `\n（共 ${matched.length} 条，已显示前 ${rows.length} 条）` : '';
+  return success(
+    call,
+    `共 ${matched.length} 条记忆`,
+    lines + suffix,
+    { count: matched.length, items: rows.map((memory) => ({ id: memory.id ?? 0, type: memory.type, name: memory.name })) },
+  );
+}
+
+function formatMemoryEntry(memory: Memory): string {
+  const id = memory.id != null ? `#${memory.id}` : '#?';
+  const silent = memory.silentInject === true ? '是' : '否';
+  const lines = [
+    `${id} [${memory.type}] ${memory.name}`,
+    `层级：${memory.scope}｜静默注入：${silent}`,
+    memory.tags.length > 0 ? `标签：${memory.tags.join('、')}` : '标签：无',
+    '内容：',
+    memory.content,
+  ];
+  return lines.join('\n');
+}
+
+async function readMemoryEntry(runtime: MemoryToolRuntime, call: ToolCall): Promise<ToolResult> {
+  const key = stringValue(call.payload.key).trim();
+  if (!key) return failure(call, 'memory_invalid_key', '缺少记忆标识', '参数 key 需要填写记忆 ID 或标题', false);
+
+  const numeric = Number(key.replace(/^#/, ''));
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const byId = await runtime.getMemoryById(numeric);
+    if (byId) return memoryEntrySuccess(call, byId);
+  }
+
+  const all = await runtime.listMemories();
+  const lower = key.toLowerCase();
+  const exact = all.find((memory) => memory.name.toLowerCase() === lower);
+  const partial = exact ?? all.find((memory) => memory.name.toLowerCase().startsWith(lower));
+  if (!partial) {
+    return failure(call, 'memory_not_found', '未找到记忆', `未找到匹配「${key}」的记忆，可先用 memory_list 列出标题`, false);
+  }
+  return memoryEntrySuccess(call, partial);
+}
+
+function memoryEntrySuccess(call: ToolCall, memory: Memory): ToolResult {
+  // summary 只给标题，供工具卡片状态行展示；完整正文走 detail。
+  return success(call, memory.name, formatMemoryEntry(memory), {
+    id: memory.id ?? 0,
+    type: memory.type,
+    name: memory.name,
+    scope: memory.scope,
+    tags: memory.tags,
+    silentInject: memory.silentInject === true,
+    content: memory.content,
+  });
 }
 
 async function saveMemory(runtime: MemoryToolRuntime, call: ToolCall): Promise<ToolResult> {
@@ -103,6 +221,8 @@ async function saveMemory(runtime: MemoryToolRuntime, call: ToolCall): Promise<T
     content: stringValue(payload.content),
     tags: stringArrayValue(payload.tags),
     pinned: false,
+    // memory_save 保存的记忆默认静默注入：模型主动存入的长期信息应在后续对话自动生效。
+    silentInject: true,
   });
   if (!saved?.id) return failure(call, 'memory_save_failed', '保存失败', '未收到保存确认', true);
   return success(call, '已保存', name, { id: saved.id });

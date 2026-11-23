@@ -16,6 +16,9 @@ export function resolvePresetMention(
 
   let matched: { preset: SystemPromptPreset; rest: string } | null = null;
   for (const preset of presets) {
+    // 片段模式（insertOnly）由 popup 直接写入正文，不参与注入解析；
+    // 否则正文里的片段内容会被再注入一次，导致同段内容重复发送。
+    if (preset.insertOnly) continue;
     const name = preset.name?.trim();
     if (!name || !body.startsWith(name)) continue;
 

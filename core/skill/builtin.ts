@@ -1,4 +1,4 @@
-import { MEMORY_UPDATE_SCHEMA, MEMORY_DELETE_SCHEMA } from '../templates';
+import { MEMORY_GET_SCHEMA, MEMORY_LIST_SCHEMA, MEMORY_UPDATE_SCHEMA, MEMORY_DELETE_SCHEMA } from '../templates';
 import {
   SKILL_MEMORY_INSTRUCTIONS,
   SKILL_ULTRA_THINK_INSTRUCTIONS,
@@ -15,7 +15,7 @@ import type { Skill } from '../types';
 export const BUILTIN_SKILLS: Skill[] = [
   {
     name: 'memory',
-    description: '记忆管理：/memory save <内容> | /memory list | /memory update | /memory delete',
+    description: '记忆管理：/memory save <内容> | /memory list | /memory update | /memory delete。列出/查看用记忆工具（memory_list 列标题、memory_get 读全文）',
     instructions: fillSkillSchemas(SKILL_MEMORY_INSTRUCTIONS),
     source: 'builtin',
     memoryEnabled: true,
@@ -88,6 +88,8 @@ export const BUILTIN_SKILLS: Skill[] = [
 /** 将 skill 指令模板中的工具 schema 占位符填充为实际 JSON 字符串。 */
 function fillSkillSchemas(instructions: string): string {
   return instructions
+    .replace('{{memoryListSchema}}', MEMORY_LIST_SCHEMA)
+    .replace('{{memoryGetSchema}}', MEMORY_GET_SCHEMA)
     .replace('{{memoryUpdateSchema}}', MEMORY_UPDATE_SCHEMA)
     .replace('{{memoryDeleteSchema}}', MEMORY_DELETE_SCHEMA);
 }

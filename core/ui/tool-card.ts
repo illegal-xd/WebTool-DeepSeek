@@ -24,7 +24,7 @@ export function injectToolCardStyles() {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = TOOL_CARD_CSS;
-  document.head.appendChild(style);
+  (document.head ?? document.documentElement)?.appendChild(style);
 }
 
 export function createToolCard(call: ToolCall): HTMLElement {

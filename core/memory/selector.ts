@@ -99,6 +99,13 @@ interface ScoredEntry {
 }
 
 /** 按 scope 分组打分并按分数降序；成本超过单条上限的记忆先剔除（数据不受影响）。 */
+/**
+ * 静默注入的记忆无条件优先入选（仍受单条上限与总预算约束）。
+ * 用远高于常规权重的加分保证其在所属层级内排第一，
+ * 使「首次对话就注入」不依赖关键词命中。
+ */
+const SILENT_INJECT_BOOST = 1_000_000;
+
 function scoreCandidates(
   candidates: Memory[],
   promptWords: string[],
@@ -110,7 +117,9 @@ function scoreCandidates(
     if (cost > singleEntryCap) continue;
     const scope = normalizeMemoryScope(memory);
     if (!byScope.has(scope)) byScope.set(scope, []);
-    const score = memoryWeight(memory, keywordScore(promptWords, memory)) + decayScore(memory);
+    const score = memoryWeight(memory, keywordScore(promptWords, memory))
+      + decayScore(memory)
+      + (memory.silentInject === true ? SILENT_INJECT_BOOST : 0);
     byScope.get(scope)!.push({ memory, score, cost });
   }
 
@@ -199,9 +208,18 @@ function sanitizeContent(text: string): string {
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
 }
 
+/**
+ * 单条记忆的注入行。
+ *
+ * - 静默注入：标注「全文」，标题 + 完整正文（内容需无条件生效）
+ * - 其余记忆：标注「仅标题」，只给 `#id [type] 标题` 索引，正文由 memory_get 按需读取
+ */
 export function formatMemoryLine(m: Memory): string {
   const idPrefix = m.id != null ? `#${m.id} ` : '';
-  return `- ${idPrefix}[${m.type}] ${sanitizeContent(m.name)}: ${sanitizeContent(m.content)}`;
+  const head = `- ${idPrefix}[${m.type}] ${sanitizeContent(m.name)}`;
+  return m.silentInject === true
+    ? `${head}（全文）: ${sanitizeContent(m.content)}`
+    : `${head}（仅标题）`;
 }
 
 export function formatMemoriesBlock(memories: Memory[]): string {

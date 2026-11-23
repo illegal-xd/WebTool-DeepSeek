@@ -42,6 +42,7 @@ export type {
 export type MemoryType = 'user' | 'feedback' | 'topic' | 'reference';
 export type MemoryScope = 'permanent' | 'contextual' | 'temporary';
 
+/** @Deprecated 2026-11-20 Expert 模式已停用，保留类型以便回退。 */
 export type ModelType = 'expert' | null;
 
 export interface UsageStats {
@@ -74,6 +75,11 @@ export interface Memory {
   lastAccessedAt: number;
   /** 软删除标记：非空表示已归档（不参与注入/列表，但保留在库、导出与同步中）。 */
   archivedAt?: number;
+  /**
+   * 静默注入：开启后注入该记忆的完整正文（未开启时只注入 `#ID [类型] 标题` 索引（不含标签），
+   * 正文由记忆查询工具按需读取）。
+   */
+  silentInject?: boolean;
 }
 
 export interface SyncConfig {
@@ -133,6 +139,7 @@ export type NewMemory = {
   pinned: boolean;
   syncId?: string;
   scope?: MemoryScope;
+  silentInject?: boolean;
 };
 
 export interface SystemPromptPreset {
@@ -144,6 +151,11 @@ export interface SystemPromptPreset {
   memoryEnabled?: boolean;
   memoryIds?: number[];
   usage?: UsageStats;
+  /**
+   * 片段模式：`@名称` 选中后把内容直接写入输入框正文，不参与系统提示词注入。
+   * 用于保存常用片段/模板文本，避免同一段内容被「插入正文 + 注入提示词」重复发送。
+   */
+  insertOnly?: boolean;
 }
 
 export interface ConversationSession {

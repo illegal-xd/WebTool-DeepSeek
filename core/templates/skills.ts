@@ -8,6 +8,8 @@ export const SKILL_MEMORY_INSTRUCTIONS = `用户请求管理记忆。每条记�
 
 ### 附加工具 Schema
 
+{{memoryListSchema}}
+{{memoryGetSchema}}
 {{memoryUpdateSchema}}
 {{memoryDeleteSchema}}
 
@@ -17,8 +19,14 @@ export const SKILL_MEMORY_INSTRUCTIONS = `用户请求管理记忆。每条记�
 
 根据用户输入判断操作类型，然后在回复末尾调用对应的工具。
 
+### 列出（用户想查看有哪些记忆）
+调用 memory_list 获取记忆标题（只返回 ID、类型与标题，不含正文）；可用 query 按标题或标签过滤，limit 控制条数。
+
+### 查看（用户想读取某条记忆的内容）
+按 ID 或标题调用 memory_get 读取完整正文；标题不确定时先 memory_list 定位，再按 key 读取。
+
 ### 保存（用户想记住新内容）
-分析用户提供的内容，确定合适的 type 和标签，在回复末尾调用 memory_save 工具。
+分析用户提供的内容，确定合适的 type 和标签，在回复末尾调用 memory_save 工具。保存的记忆默认开启静默注入，后续对话会自动带上。
 
 ### 修改（用户想更新已有记忆）
 找到目标记忆的 ID，在回复末尾调用 memory_update 工具。所有字段均为必填，未变更的字段保持原值。
@@ -26,12 +34,10 @@ export const SKILL_MEMORY_INSTRUCTIONS = `用户请求管理记忆。每条记�
 ### 删除（用户想移除某条记忆）
 确认目标记忆的 ID，在回复末尾调用 memory_delete 工具。
 
-### 列出
-列出"已有记忆"中的所有条目（含 ID），无需调用工具。
-
 ## 规则
 - 先正常回复用户，工具调用块附在回复最末尾
 - 支持一次操作多条记忆（输出多个 invoke 块）
+- 列出/查看是只读操作，不要顺手调用 save/update/delete
 - 记忆内容需要再不丢失用户意图的情况下尽可能简短
 - 如果用户意图模糊，先确认再操作`;
 

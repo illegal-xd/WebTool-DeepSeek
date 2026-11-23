@@ -17,6 +17,7 @@ const FILTER_TYPES: { key: MemoryType | 'all'; label: string }[] = [
 export default function PresetForm({ initial, onSave, onCancel, onWidthChange }: Props) {
   const [name, setName] = useState(initial?.name ?? '');
   const [content, setContent] = useState(initial?.content ?? '');
+  const [insertOnly, setInsertOnly] = useState(initial?.insertOnly ?? false);
   const [memoryEnabled, setMemoryEnabled] = useState(initial?.memoryEnabled ?? false);
   const [selectedMemoryIds, setSelectedMemoryIds] = useState<number[]>(initial?.memoryIds ?? []);
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -30,8 +31,8 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
   }, []);
 
   useEffect(() => {
-    onWidthChange?.(memoryEnabled);
-  }, [memoryEnabled, onWidthChange]);
+    onWidthChange?.(!insertOnly && memoryEnabled);
+  }, [memoryEnabled, insertOnly, onWidthChange]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,8 +44,9 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
       content: content.trim(),
       createdAt: initial?.createdAt ?? now,
       updatedAt: now,
-      memoryEnabled,
-      memoryIds: memoryEnabled ? selectedMemoryIds : [],
+      memoryEnabled: insertOnly ? false : memoryEnabled,
+      memoryIds: !insertOnly && memoryEnabled ? selectedMemoryIds : [],
+      insertOnly,
     });
   };
 
@@ -113,6 +115,29 @@ export default function PresetForm({ initial, onSave, onCancel, onWidthChange }:
             onChange={(e) => setContent(e.target.value)}
             className="ds-input w-full px-3 py-2 text-sm font-mono rounded-lg resize-none transition-all duration-150"
           />
+        </div>
+
+        {/* Switch Toggle for Snippet Mode */}
+        <div className="flex items-center justify-between p-2 rounded-lg border border-dashed" style={{ borderColor: 'var(--ds-border)' }}>
+          <div className="flex flex-col pr-2">
+            <span className="text-xs font-semibold" style={{ color: 'var(--ds-text-secondary)' }}>片段模式（插入正文，不注入）</span>
+            <span className="text-[10px]" style={{ color: 'var(--ds-text-tertiary)' }}>
+              用 <code className="ds-code font-mono">@名称</code> 选择后，内容直接写入输入框，不进入系统提示词，也不会重复注入
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setInsertOnly(!insertOnly)}
+            className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+            style={{ backgroundColor: insertOnly ? 'var(--ds-blue)' : 'var(--ds-border)' }}
+            aria-pressed={insertOnly}
+          >
+            <span
+              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                insertOnly ? 'translate-x-4' : 'translate-x-0'
+              }`}
+            />
+          </button>
         </div>
 
         {/* Switch Toggle for Memory Injection */}

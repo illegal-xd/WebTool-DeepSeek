@@ -11,6 +11,7 @@ import type { BackgroundConfig, Memory, ModelType, Skill, SystemPromptPreset, To
 import type { TemplateOverrides } from '../core/templates/overrides';
 import type { InjectionEvent } from '../core/inject/events';
 import { buildAutoContinuationPrompt, type ContinuationToolResult } from '../core/templates/prompts';
+import { extractMemoryCandidates } from '../core/memory/extractor';
 
 const BLOCK_CLASS = 'dpp-tool-block';
 const BLOCK_STYLE_ID = 'dpp-tool-block-css';
@@ -42,6 +43,10 @@ let toolCleanupFrame: number | null = null;
 // ─── 自动续聊状态 ──────────────────────────────────────────────────
 /** 本轮（当前 completion 请求）收集的工具执行结果，finalize 时用于续聊决策。 */
 const currentTurnResults: ContinuationToolResult[] = [];
+/** 本轮工具原始名（call.name），用于判断是否只是「只读记忆查询」。 */
+const currentTurnToolNames: string[] = [];
+/** 最近一次用户输入（main-world 捕获），用于区分「只查看」与「带任务」。 */
+let lastUserPrompt = '';
 let continuationRound = 0;
 const MAX_CONTINUATION_ROUNDS = 8;
 /** 续聊请求发送后置 true，该请求的 onResponseComplete 之前有效，用于区分手动消息。 */
@@ -184,6 +189,10 @@ export default defineContentScript({
           // 不清理 pendingCallMap/resolvedCallRaws：上一轮异步执行可能仍在进行中。
           currentToolBlock = null;
           currentTurnResults.length = 0;
+          currentTurnToolNames.length = 0;
+          currentTurnHost = null;
+          turnSeq += 1;
+          earlyPlaceholderNames.length = 0;
           // 手动消息（非续聊）时重置续聊计数；续聊请求自身不清零计数。
           if (!isAutoContinuing) {
             continuationRound = 0;
@@ -202,7 +211,9 @@ export default defineContentScript({
           break;
         }
         case 'RESPONSE_COMPLETE': {
+          if (typeof event.data.userPrompt === 'string') lastUserPrompt = event.data.userPrompt;
           await finalizeResponse();
+          queueMemoryCandidates(event.data.userPrompt);
           break;
         }
         case 'RESTORE_TOOL_CALLS': {
@@ -219,6 +230,7 @@ export default defineContentScript({
         }
         case 'ROUTE_CHANGED': {
           markRouteRestoreWindow();
+          resetRenderGuard();
           clearRenderedToolBlocks();
           setTimeout(() => restorePersistedToolBlocks(), 900);
           // 二次存活检查：历史加载的 React 重渲染可能在首次恢复后移除 block。
@@ -373,7 +385,7 @@ function injectBlockStyles() {
   const style = document.createElement('style');
   style.id = BLOCK_STYLE_ID;
   style.textContent = BLOCK_CSS;
-  document.head.appendChild(style);
+  (document.head ?? document.documentElement)?.appendChild(style);
 }
 
 function createToolBlockItem(name: string, summary: string, status?: 'done' | 'error', detail?: string): HTMLElement {
@@ -455,16 +467,29 @@ function createToolBlock(call: ToolCall): HTMLElement {
 
 function updateToolBlockWithResult(block: HTMLElement, call: ToolCall, result: ToolCardResult) {
   const callDisplayName = getToolDisplayName(call.name);
+  const renderKey = callRenderKey(call);
   const items = block.querySelectorAll('.dpp-tb-item');
   let targetItem: HTMLElement | null = null;
+
+  // 1) 优先按调用键精确匹配：同一调用只更新自己那一行。
   for (const item of items) {
-    const nameEl = item.querySelector('.dpp-tb-item-name');
-    if (nameEl && (nameEl.textContent === callDisplayName || nameEl.textContent === call.name)) {
-      const statusEl = item.querySelector('.dpp-tb-item-status');
-      // 以 status 文本「执行中...」或空作为未完成标记。
-      if (statusEl && (statusEl.textContent === '执行中...' || statusEl.textContent === '')) {
-        targetItem = item as HTMLElement;
-        break;
+    if ((item as HTMLElement).dataset.callKey === renderKey) {
+      targetItem = item as HTMLElement;
+      break;
+    }
+  }
+
+  // 2) 兼容早期占位生成的条目（其 callKey 与正式调用不同）。
+  if (!targetItem) {
+    for (const item of items) {
+      const nameEl = item.querySelector('.dpp-tb-item-name');
+      if (nameEl && (nameEl.textContent === callDisplayName || nameEl.textContent === call.name)) {
+        const statusEl = item.querySelector('.dpp-tb-item-status');
+        // 以 status 文本「执行中...」或空作为未完成标记。
+        if (statusEl && (statusEl.textContent === '执行中...' || statusEl.textContent === '')) {
+          targetItem = item as HTMLElement;
+          break;
+        }
       }
     }
   }
@@ -473,9 +498,11 @@ function updateToolBlockWithResult(block: HTMLElement, call: ToolCall, result: T
     addNewToolItem(block, call, result);
     return;
   }
+  targetItem.dataset.callKey = renderKey;
 
   const statusEl = targetItem.querySelector('.dpp-tb-item-status') as HTMLElement | null;
-  const displayedSummary = result.ok ? (result.detail || result.summary) : result.summary;
+  // 状态行只显示 summary（如「已读取 #89」）；完整内容在下方详情区展示，避免重复两份全文
+  const displayedSummary = result.summary;
   const redundant = displayedSummary === call.name
     || displayedSummary === getToolDisplayName(call.name)
     || displayedSummary === '已执行';
@@ -569,14 +596,19 @@ function hasUnfinishedItemForName(block: HTMLElement, name: string): boolean {
 function addNewToolItem(block: HTMLElement, call: ToolCall, result: ToolCardResult) {
   const body = block.querySelector('.dpp-tb-body');
   if (!body) return;
-  body.appendChild(createToolBlockItem(getToolDisplayName(call.name), result.detail || result.summary, result.ok ? 'done' : 'error', formatToolResultDetail(result)));
+  // 状态行只显示 summary（如记忆标题）；完整内容进入下方详情区，避免两份全文。
+  const item = createToolBlockItem(getToolDisplayName(call.name), result.summary, result.ok ? 'done' : 'error', formatToolResultDetail(result));
+  item.dataset.callKey = callRenderKey(call);
+  body.appendChild(item);
   setToolBlockTitle(block, getToolBlockItemCount(block));
 }
 
 function addExecutingToolItem(block: HTMLElement, call: ToolCall) {
   const body = block.querySelector('.dpp-tb-body');
   if (!body) return;
-  body.appendChild(createToolBlockItem(getToolDisplayName(call.name), '执行中...'));
+  const item = createToolBlockItem(getToolDisplayName(call.name), '执行中...');
+  item.dataset.callKey = callRenderKey(call);
+  body.appendChild(item);
   setToolBlockTitle(block, getToolBlockItemCount(block));
 }
 
@@ -603,16 +635,7 @@ function renderEarlyToolPlaceholder(name: string, targetMessage?: Element) {
   currentToolBlock = block;
   earlyPlaceholderNames.push(name);
 
-  if (targetMessage instanceof HTMLElement) {
-    getAssistantResponseHost(targetMessage).appendChild(block);
-  } else {
-    const lastMsg = getLastAssistantMessage();
-    if (lastMsg) {
-      getAssistantResponseHost(lastMsg).appendChild(block);
-    } else {
-      document.body.appendChild(block);
-    }
-  }
+  mountToolBlock(block, targetMessage instanceof HTMLElement ? targetMessage : null);
 }
 
 function consumeEarlyPlaceholder(name: string): boolean {
@@ -660,7 +683,17 @@ function hasExistingToolBlock(message: Element): boolean {
 
 function getLastAssistantMessage(): HTMLElement | null {
   const msgs = findAssistantMessages();
-  return msgs.length > 0 ? msgs[msgs.length - 1] : null;
+  if (msgs.length === 0) return null;
+  // 优先返回真正含 markdown 正文的消息，避免把占位/加载态消息当作宿主。
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    if (msgs[i].querySelector('.ds-markdown, [class*="ds-markdown"]')) return msgs[i];
+  }
+  return msgs[msgs.length - 1];
+}
+
+/** 思考/推理容器：工具块不应挂载到这些区域（会被折叠或替换）。 */
+function isReasoningContainer(el: Element): boolean {
+  return Boolean(el.closest('details, [class*="thinking"], [class*="reasoning"]'));
 }
 
 /**
@@ -677,14 +710,20 @@ function getAssistantResponseHost(message: HTMLElement): HTMLElement {
   ];
   for (const sel of hostSelectors) {
     const hosts = message.querySelectorAll<HTMLElement>(sel);
-    if (hosts.length > 0) return hosts[hosts.length - 1];
+    for (let i = hosts.length - 1; i >= 0; i -= 1) {
+      if (!isReasoningContainer(hosts[i])) return hosts[i];
+    }
   }
   // 回退：markdown 容器的父元素（包裹 markdown 的 content host）。
   // 思考模式下 DeepSeek 会渲染 reasoning + answer 两个 markdown 块，
   // 取最后一个（通常为最终回答块）以避免误挂到 reasoning 容器。
   const markdowns = message.querySelectorAll<HTMLElement>('.ds-markdown, [class*="ds-markdown"]');
   const lastMarkdown = markdowns.length > 0 ? markdowns[markdowns.length - 1] : null;
-  if (lastMarkdown?.parentElement && lastMarkdown.parentElement !== message) {
+  if (
+    lastMarkdown?.parentElement
+    && lastMarkdown.parentElement !== message
+    && !isReasoningContainer(lastMarkdown.parentElement)
+  ) {
     return lastMarkdown.parentElement;
   }
   // 最终回退：message root（与现状一致，不更差）。
@@ -695,9 +734,316 @@ function getAssistantMessageRoot(el: Element): Element | null {
   return el.closest(ASSISTANT_MESSAGE_SELECTOR);
 }
 
+// ─── 工具块渲染守护 ───────────────────────────────────────────────
+//
+// DeepSeek 使用 React 渲染消息列表：流式期间与流结束后都可能重渲染子树，
+// 直接 append 的 DOM 节点会被移除；工具调用也可能早于 assistant 消息挂载。
+// 这里用「注册表 + 守护轮询」保证块最终一定可见：
+//   1) 块被移除 → 按指纹/索引重挂到同一条 assistant 消息；
+//   2) 找不到宿主 → 落到右下角可见兜底容器，宿主就绪后自动迁移；
+//   3) 多次重挂仍被移除 → 降级到兜底容器，避免无限抖动。
+
+const FALLBACK_HOST_ID = 'dpp-tool-fallback-host';
+const FALLBACK_STYLE_ID = 'dpp-tool-fallback-css';
+const RENDER_GUARD_INTERVAL_MS = 1000;
+const RENDER_GUARD_MAX_REMOUNTS = 20;
+const RENDER_GUARD_FALLBACK_AFTER = 3;
+
+interface MountedBlockMeta {
+  fingerprint: string;
+  assistantIndex: number;
+  sessionId: string | null;
+  remounts: number;
+  inFallback: boolean;
+  /** 实时路径的调用键（轮次 + 原始调用），用于阻止同一调用被重复渲染。 */
+  callKey?: string;
+  /** 恢复路径的记录键，用于阻止持久化记录与实时块重复渲染。 */
+  restoreKey?: string;
+  /** 落兜底容器时的消息数量基线：只有新消息出现才迁移，避免挂到上一条回答。 */
+  baselineMessageCount: number;
+}
+
+/** 轮次序号：TURN_START 递增，避免跨轮相同调用被误判为重复。 */
+let turnSeq = 0;
+/** 本轮工具块统一挂载的 assistant 消息（避免流式过程中挂到不同消息）。 */
+let currentTurnHost: HTMLElement | null = null;
+
+/** 一次工具调用的渲染键：同一轮内相同原始调用视为同一次渲染。 */
+function callRenderKey(call: ToolCall): string {
+  const base = (call.raw ?? '').trim() || `${call.name}:${JSON.stringify(call.payload ?? {})}`;
+  return `t${turnSeq}#${base.slice(0, 240)}`;
+}
+
+function findLiveBlockByKey(key: string): HTMLElement | null {
+  for (const block of mountedBlocks.keys()) {
+    if (block.isConnected && block.dataset.callKey === key) return block;
+  }
+  return null;
+}
+
+function findLiveBlockByRestoreKey(key: string): HTMLElement | null {
+  for (const block of mountedBlocks.keys()) {
+    if (block.isConnected && block.dataset.restoreKey === key) return block;
+  }
+  for (const block of document.querySelectorAll<HTMLElement>(`.${BLOCK_CLASS}`)) {
+    if (block.dataset.restoreKey === key) return block;
+  }
+  return null;
+}
+
+/** 本轮宿主：首次解析后缓存，保证同轮所有工具块挂到同一条回答。 */
+function resolveTurnHost(): HTMLElement | null {
+  if (currentTurnHost && document.contains(currentTurnHost)) return currentTurnHost;
+  currentTurnHost = getLastAssistantMessage();
+  return currentTurnHost;
+}
+
+const mountedBlocks = new Map<HTMLElement, MountedBlockMeta>();
+let renderGuardTimer: number | null = null;
+let guardTick = 0;
+
+function assistantFingerprint(message: HTMLElement): string {
+  return (message.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 48);
+}
+
+function getFallbackHost(): HTMLElement {
+  injectFallbackStyles();
+  let host = document.getElementById(FALLBACK_HOST_ID) as HTMLElement | null;
+  if (!host) {
+    host = document.createElement('div');
+    host.id = FALLBACK_HOST_ID;
+    host.className = 'dpp-tool-fallback';
+
+    const label = document.createElement('div');
+    label.className = 'dpp-tool-fallback-label';
+    label.textContent = '工具执行结果（等待页面消息容器就绪）';
+    host.appendChild(label);
+    (document.body ?? document.documentElement)?.appendChild(host);
+  }
+  return host;
+}
+
+function releaseFallbackHostIfEmpty(): void {
+  const host = document.getElementById(FALLBACK_HOST_ID);
+  if (host && host.childElementCount <= 1) host.remove();
+}
+
+function injectFallbackStyles(): void {
+  if (document.getElementById(FALLBACK_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = FALLBACK_STYLE_ID;
+  style.textContent = `
+.dpp-tool-fallback {
+  position: fixed;
+  right: 16px;
+  bottom: 88px;
+  z-index: 99990;
+  width: min(380px, calc(100vw - 32px));
+  max-height: 45vh;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid var(--ds-border, #E5E7EB);
+  background: var(--ds-bg, #FFFFFF);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
+  overscroll-behavior: contain;
+}
+.dpp-tool-fallback-label {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 4px 6px;
+  color: var(--ds-text-secondary, #6B7280);
+}
+`;
+  (document.head ?? document.documentElement)?.appendChild(style);
+}
+
+/** 统一挂载入口：优先 assistant 宿主，找不到时落到可见兜底容器。 */
+function mountToolBlock(
+  block: HTMLElement,
+  preferredMessage?: HTMLElement | null,
+  options?: { callKey?: string; restoreKey?: string },
+): void {
+  const messages = findAssistantMessages();
+  const target = preferredMessage ?? messages[messages.length - 1] ?? null;
+  if (options?.callKey) block.dataset.callKey = options.callKey;
+  if (options?.restoreKey) block.dataset.restoreKey = options.restoreKey;
+  if (target) {
+    getAssistantResponseHost(target).appendChild(block);
+  } else {
+    getFallbackHost().appendChild(block);
+  }
+
+  mountedBlocks.set(block, {
+    fingerprint: target ? assistantFingerprint(target) : '',
+    assistantIndex: target ? messages.indexOf(target) : -1,
+    sessionId: getCurrentChatSessionId(),
+    remounts: 0,
+    inFallback: !target,
+    callKey: options?.callKey,
+    restoreKey: options?.restoreKey,
+    baselineMessageCount: target ? -1 : messages.length,
+  });
+  startRenderGuard();
+  reportRenderStatus();
+}
+
+/** 按指纹优先、索引兜底定位块所属的 assistant 消息。 */
+function locateMessageForBlock(meta: MountedBlockMeta, messages: HTMLElement[]): HTMLElement | null {
+  if (messages.length === 0) return null;
+
+  if (meta.fingerprint) {
+    const prefix = meta.fingerprint.slice(0, 16);
+    const byIndex = meta.assistantIndex >= 0 ? messages[meta.assistantIndex] : null;
+    if (byIndex && assistantFingerprint(byIndex).startsWith(prefix)) return byIndex;
+    const byFingerprint = messages.find((message) => assistantFingerprint(message).startsWith(prefix));
+    if (byFingerprint) return byFingerprint;
+  }
+
+  if (meta.assistantIndex >= 0 && messages[meta.assistantIndex]) return messages[meta.assistantIndex];
+
+  // 无指纹（早期占位）：只有出现新的助手消息才迁移，避免把块挂到上一条回答上。
+  if (meta.baselineMessageCount >= 0 && messages.length <= meta.baselineMessageCount) return null;
+  return messages[messages.length - 1] ?? null;
+}
+
+function startRenderGuard(): void {
+  if (renderGuardTimer !== null) return;
+  renderGuardTimer = window.setInterval(guardMountedBlocks, RENDER_GUARD_INTERVAL_MS);
+}
+
+function stopRenderGuard(): void {
+  if (renderGuardTimer === null) return;
+  window.clearInterval(renderGuardTimer);
+  renderGuardTimer = null;
+}
+
+function resetRenderGuard(): void {
+  stopRenderGuard();
+  mountedBlocks.clear();
+  document.getElementById(FALLBACK_HOST_ID)?.remove();
+}
+
+/** 守护：块被 React 移除/移出宿主时自动重挂；多次失败降级到兜底容器。 */
+function guardMountedBlocks(): void {
+  if (mountedBlocks.size === 0) {
+    stopRenderGuard();
+    releaseFallbackHostIfEmpty();
+    return;
+  }
+  if (document.hidden) return;
+
+  // 性能：全部块健康时不必每轮扫描 DOM，仅在每 3 个 tick 做一次完整校验。
+  guardTick += 1;
+  const needsFullCheck = guardTick % 3 === 0;
+  let allHealthy = true;
+  for (const [block, meta] of mountedBlocks) {
+    if (!block.isConnected || meta.inFallback) {
+      allHealthy = false;
+      break;
+    }
+  }
+  if (allHealthy && !needsFullCheck) return;
+
+  const sessionId = getCurrentChatSessionId();
+  const messages = findAssistantMessages();
+
+  for (const [block, meta] of mountedBlocks) {
+    // 已切换到其他会话：旧会话的块交给持久化恢复路径处理。
+    if (meta.sessionId && sessionId && meta.sessionId !== sessionId) continue;
+
+    if (!block.isConnected) {
+      if (meta.remounts >= RENDER_GUARD_MAX_REMOUNTS) {
+        mountedBlocks.delete(block);
+        continue;
+      }
+      if (meta.remounts >= RENDER_GUARD_FALLBACK_AFTER) {
+        getFallbackHost().appendChild(block);
+        meta.inFallback = true;
+      } else {
+        const target = locateMessageForBlock(meta, messages);
+        if (target) {
+          getAssistantResponseHost(target).appendChild(block);
+          meta.inFallback = false;
+          meta.fingerprint = assistantFingerprint(target);
+          meta.assistantIndex = messages.indexOf(target);
+        } else {
+          getFallbackHost().appendChild(block);
+          meta.inFallback = true;
+        }
+      }
+      meta.remounts += 1;
+      reportRenderStatus();
+      continue;
+    }
+
+    const target = locateMessageForBlock(meta, messages);
+    if (!target) continue;
+
+    // 兜底容器中的块：消息容器就绪后迁回原位。
+    if (meta.inFallback) {
+      getAssistantResponseHost(target).appendChild(block);
+      meta.inFallback = false;
+      meta.fingerprint = assistantFingerprint(target);
+      meta.assistantIndex = messages.indexOf(target);
+      reportRenderStatus();
+      continue;
+    }
+
+    // 仍 connected 但被移出了宿主（React 重建容器）：归位。
+    if (!getAssistantResponseHost(target).contains(block)) {
+      getAssistantResponseHost(target).appendChild(block);
+      meta.remounts += 1;
+      reportRenderStatus();
+    }
+  }
+
+  releaseFallbackHostIfEmpty();
+}
+
+/** 向 MAIN world 上报渲染状态，供页面 console 的 __webtoolDeepseek.render 查看。 */
+function reportRenderStatus(): void {
+  try {
+    const entries = [...mountedBlocks.values()];
+    window.postMessage({
+      source: 'WebTool-DeepSeek-content',
+      type: 'RENDER_STATUS',
+      data: {
+        blocks: mountedBlocks.size,
+        connected: [...mountedBlocks.keys()].filter((block) => block.isConnected).length,
+        fallback: entries.filter((meta) => meta.inFallback).length,
+        remounts: entries.reduce((sum, meta) => sum + meta.remounts, 0),
+        updatedAt: Date.now(),
+      },
+    }, '*');
+  } catch {
+    // 上报失败不影响渲染
+  }
+}
+
 async function handleToolCall(call: ToolCall, callId: number) {
+  const renderKey = callRenderKey(call);
+
+  // 同一轮内同一调用被重复通知（流式重解析 / 迟到的消息）：只补结果，绝不新建块。
+  const duplicateBlock = findLiveBlockByKey(renderKey);
+  if (duplicateBlock) {
+    if (duplicateBlock.dataset.completed !== '1') {
+      try {
+        const result = await trackToolExecution(executeToolCall(call));
+        updateToolBlockWithResult(duplicateBlock, call, result);
+        duplicateBlock.dataset.completed = '1';
+        collectTurnResult(call, result);
+      } catch {
+        // EXECUTE_TOOL_CALL 流程会处理
+      }
+    }
+    return;
+  }
+
   // Reuse existing tool block for this conversation turn
   if (currentToolBlock && document.contains(currentToolBlock)) {
+    // 早期占位创建的块没有调用键：复用后补上，供收尾去重与后续精确匹配使用。
+    if (!currentToolBlock.dataset.callKey) currentToolBlock.dataset.callKey = renderKey;
     const hasEarlyPlaceholder = consumeEarlyPlaceholder(call.name);
     if (!hasEarlyPlaceholder && !hasUnfinishedItemForName(currentToolBlock, call.name)) {
       addExecutingToolItem(currentToolBlock, call);
@@ -721,20 +1067,16 @@ async function handleToolCall(call: ToolCall, callId: number) {
     return;
   }
 
-  // New conversation turn — clear previous tool call state
-  pendingCallMap.clear();
-  resolvedCallRaws.clear();
-  earlyPlaceholderNames.length = 0;
-  const lastMsg = getLastAssistantMessage();
+  // 本轮第一个工具块。注意：不要在这里清理 pendingCallMap / resolvedCallRaws，
+  // 否则上一轮迟到的 EXECUTE_TOOL_CALL 会因缺失记录而被重新执行（表现为重复渲染）。
+  // 清理统一放在 TURN_START 与 finalizeResponse。
+  const host = resolveTurnHost();
   const block = createToolBlock(call);
   addExecutingToolItem(block, call);
   currentToolBlock = block;
+  block.dataset.completed = '1';
 
-  if (lastMsg) {
-    getAssistantResponseHost(lastMsg).appendChild(block);
-  } else {
-    document.body.appendChild(block);
-  }
+  mountToolBlock(block, host, { callKey: renderKey });
 
   const entry = { call, block, callId, resolved: false };
   pendingCallMap.set(callId, entry);
@@ -760,7 +1102,17 @@ async function handleToolCall(call: ToolCall, callId: number) {
 async function executeToolCall(call: ToolCall): Promise<ToolCardResult> {
   try {
     const result = await safeRuntimeSendMessage<ToolCardResult>({ type: 'EXECUTE_TOOL_CALL', payload: call });
-    return result ?? { ok: false, summary: '执行失败', detail: '后台未返回执行结果' };
+    const resolved = result ?? { ok: false, summary: '执行失败', detail: '后台未返回执行结果' };
+    // memory_get 读到正文后通知 main-world：下一轮把正文补注入上下文，
+    // 避免 agent 因为「只看到标题索引」而重复调用 memory_get。
+    if (call.name === 'memory_get' && resolved.ok) {
+      window.postMessage({
+        source: 'WebTool-DeepSeek-content',
+        type: 'MEMORY_CONTENT_READ',
+        key: typeof call.payload?.key === 'string' ? call.payload.key : '',
+      }, '*');
+    }
+    return resolved;
   } catch (err) {
     return { ok: false, summary: '执行失败', detail: err instanceof Error ? err.message : String(err) };
   }
@@ -776,12 +1128,55 @@ function trackToolExecution<T>(promise: Promise<T>): Promise<T> {
 
 /** 收集本轮工具执行结果，供 finalizeResponse 续聊决策使用。 */
 function collectTurnResult(call: ToolCall, result: ToolCardResult) {
+  currentTurnToolNames.push(call.name);
   currentTurnResults.push({
     name: getToolDisplayName(call.name),
     ok: result.ok,
     summary: result.summary,
     detail: result.detail,
   });
+}
+
+/** 只读记忆查询工具：结果对用户可见，只查看时无需再触发一轮模型回答。 */
+const MEMORY_READ_TOOL_NAMES = new Set([
+  'memory_list',
+  'memory_get',
+  'memory_get_many',
+  'memory_search',
+  'memory_stats',
+  'memory_handoff',
+  'memory_connection_status',
+  'memory_capabilities',
+  'memory_data_inventory',
+]);
+
+function isMemoryReadToolName(name: string): boolean {
+  return MEMORY_READ_TOOL_NAMES.has(name);
+}
+
+const MEMORY_VIEW_INTENT = /(查看|看看|显示|展示|列出|列一下|查一下|查询|读取|读一下|有哪些|是什么|记忆列表|列出来)/;
+const TASK_INTENT = /(帮我|请|根据|按照|基于|使用|用|写|改|生成|实现|分析|总结|整理|翻译|继续|然后|接着|优化|修复|对比|评估|设计|执行|完成)/;
+
+/**
+ * 是否属于「只看记忆」：短句、含查看类词、不含任务类词。
+ * 这类请求的工具结果已在工具卡片中展示，不必再自动续聊一轮。
+ */
+function isViewOnlyPrompt(prompt: string): boolean {
+  const text = prompt.trim();
+  if (!text || text.length > 60) return false;
+  if (TASK_INTENT.test(text)) return false;
+  return MEMORY_VIEW_INTENT.test(text);
+}
+
+/**
+ * 被动记忆捕获：用本轮用户输入提炼候选记忆，送入待确认队列。
+ * 只写候选，不写记忆库——是否记住由用户在侧边栏决定。
+ */
+function queueMemoryCandidates(userPrompt: unknown): void {
+  if (typeof userPrompt !== 'string' || !userPrompt.trim()) return;
+  const { candidates } = extractMemoryCandidates(userPrompt);
+  if (candidates.length === 0) return;
+  void safeRuntimeSendMessage({ type: 'ADD_MEMORY_CANDIDATES', payload: { candidates } });
 }
 
 async function finalizeResponse() {
@@ -796,6 +1191,10 @@ async function finalizeResponse() {
     if (activeToolExecutions.size > 0) {
       await Promise.allSettled([...activeToolExecutions]);
     }
+    // 一轮结束：执行记录只服务于流式期去重，清空避免跨轮误判与内存增长。
+    pendingCallMap.clear();
+    resolvedCallRaws.clear();
+    dedupeToolBlocks();
     persistToolExecutions();
     if (hadToolCallThisTurn) {
       // Refresh memory list in the side panel
@@ -804,8 +1203,23 @@ async function finalizeResponse() {
   }
 
   // 自动续聊：本轮有工具调用时，构造工具结果回传 prompt 并自动发送下一轮。
+  // 例外：本轮只有只读记忆查询，且用户只是查看记忆 → 结果已在工具卡片展示，不再续聊。
   isAutoContinuing = false;
-  if (hadToolCallThisTurn) {
+  const viewOnlyMemoryRead = hadToolCallThisTurn
+    && currentTurnToolNames.length > 0
+    && currentTurnToolNames.every(isMemoryReadToolName)
+    && isViewOnlyPrompt(lastUserPrompt);
+  if (viewOnlyMemoryRead) {
+    continuationRound = 0;
+    currentTurnResults.length = 0;
+    if (hasBlocks) {
+      const sessionId = getCurrentChatSessionId();
+      setTimeout(() => {
+        if (getCurrentChatSessionId() !== sessionId) return;
+        reinsertLostBlocks();
+      }, 1500);
+    }
+  } else if (hadToolCallThisTurn) {
     if (continuationRound >= MAX_CONTINUATION_ROUNDS) {
       continuationRound = 0;
       currentTurnResults.length = 0;
@@ -1037,6 +1451,34 @@ function clearRenderedToolBlocks() {
   document.querySelectorAll(`.${BLOCK_CLASS}`).forEach((block) => {
     block.remove();
   });
+  mountedBlocks.clear();
+}
+
+/**
+ * 收尾去重：同一调用键 / 恢复键只保留一个块（保留条目更多的那个），
+ * 兜住任何漏网的重复渲染路径。
+ */
+function dedupeToolBlocks(): void {
+  const kept = new Map<string, HTMLElement>();
+  for (const block of document.querySelectorAll<HTMLElement>(`.${BLOCK_CLASS}`)) {
+    const key = block.dataset.callKey || block.dataset.restoreKey;
+    if (!key) continue;
+    const previous = kept.get(key);
+    if (!previous) {
+      kept.set(key, block);
+      continue;
+    }
+    const previousItems = previous.querySelectorAll('.dpp-tb-item').length;
+    const currentItems = block.querySelectorAll('.dpp-tb-item').length;
+    if (currentItems > previousItems) {
+      previous.remove();
+      mountedBlocks.delete(previous);
+      kept.set(key, block);
+    } else {
+      block.remove();
+      mountedBlocks.delete(block);
+    }
+  }
 }
 
 function markRouteRestoreWindow() {
@@ -1224,7 +1666,30 @@ function normalizeToolRecordText(value: string): string {
     .trim();
 }
 
+/**
+ * 恢复渲染的状态文本：只显示标题/短摘要，绝不重复 detail 全文。
+ *
+ * 兼容旧版本持久化记录——它们把 detail 一并写进了 summary。
+ */
+function resolveRestoredStatus(exec: ToolExecutionRecord): string {
+  const summary = (exec.result.summary ?? '').trim();
+  const detailText = (exec.result.detail ?? '').trim();
+  if (!summary || summary === exec.name || summary === '已执行' || summary === '执行中...') return '';
+  if (detailText && summary === detailText) {
+    // 旧记录：从 detail 首行（`#89 [topic] 标题`）提取标题。
+    const firstLine = detailText.split('\n')[0]?.trim() ?? '';
+    const match = firstLine.match(/^#\d+ \[[^\]]+\]\s*(.+)$/);
+    return match?.[1]?.trim() ?? '';
+  }
+  // 长摘要（旧格式或非记忆工具的大段内容）截断，避免挤占状态行。
+  if (summary.length > 120) return `${summary.slice(0, 120)}…`;
+  return summary;
+}
+
 function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRestoreRecord) {
+  const restoreKey = getToolRestoreRecordKey(record);
+  // 同一记录已在页面上渲染过（实时块或上一次恢复）→ 不再重复挂载。
+  if (findLiveBlockByRestoreKey(restoreKey)) return;
   if (hasExistingToolBlock(targetMessage)) return;
 
   const block = document.createElement('div');
@@ -1250,7 +1715,7 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
   const body = block.querySelector('.dpp-tb-body');
   for (const exec of record.executions) {
     const detail = formatToolResultDetail(exec.result);
-    body?.appendChild(createToolBlockItem(exec.name, exec.result.detail || exec.result.summary, exec.result.ok ? 'done' : 'error', detail));
+    body?.appendChild(createToolBlockItem(exec.name, resolveRestoredStatus(exec), exec.result.ok ? 'done' : 'error', detail));
   }
 
   const header = block.querySelector('.dpp-tb-header') as HTMLElement;
@@ -1262,7 +1727,7 @@ function appendRestoredToolBlock(targetMessage: HTMLElement, record: ToolCallRes
     }
   });
 
-  getAssistantResponseHost(targetMessage).appendChild(block);
+  mountToolBlock(block, targetMessage, { restoreKey });
   injectBlockStyles();
 }
 
@@ -1741,7 +2206,7 @@ function applyBackground(config: BackgroundConfig | null) {
       }
     }
   `;
-  if (!existingStyle) document.head.appendChild(styleEl);
+  if (!existingStyle) (document.head ?? document.documentElement)?.appendChild(styleEl);
 
   patchContainerBackgrounds();
 }
@@ -1801,20 +2266,29 @@ const BLOCK_CSS = `
 
 /* ── Body：缩进、可折叠 ─────────────────────────────────────── */
 .dpp-tb-body {
-  overflow: hidden;
+  /* 多次工具调用时固定高度并在内部滚动，避免超出部分被裁掉 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   transition: max-height 0.25s ease, opacity 0.2s ease, margin-top 0.2s ease;
-  max-height: 500px;
+  max-height: min(60vh, 520px);
   opacity: 1;
   padding-left: 20px;
+  padding-right: 2px;
   margin-top: 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
+.dpp-tb-body::-webkit-scrollbar { width: 6px; }
+.dpp-tb-body::-webkit-scrollbar-thumb {
+  background: var(--dpp-prompt-hint-border, #E5E7EB);
+  border-radius: 3px;
+}
 .dpp-tool-block[data-collapsed="true"] .dpp-tb-body {
   max-height: 0;
   opacity: 0;
   margin-top: 0;
+  overflow: hidden;
 }
 
 /* ── Item：独立小卡片 ────────────────────────────────────────── */

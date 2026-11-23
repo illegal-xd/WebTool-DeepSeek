@@ -45,6 +45,8 @@ import {
   unassignSessionsFromCategory,
 } from '../core/conversation/store';
 import { getMemoryConfig, saveMemoryConfig, type MemoryConfig } from '../core/memory/config';
+import { addMemoryCandidates, getMemoryCandidates, removeMemoryCandidate, setMemoryCandidateStatus, type MemoryCandidate } from '../core/memory/candidates';
+import { textSimilarity } from '../core/memory/health';
 import { appendInjectionEvent, clearInjectionEvents, getInjectionEvents, type InjectionEvent } from '../core/inject/events';
 import { getTemplateOverrides, resetTemplateOverrides, saveTemplateOverrides, type TemplateOverrides } from '../core/templates/overrides';
 import { THEME_STORAGE_KEY, normalizeThemePreference, type ThemePreference } from '../core/theme';
@@ -295,6 +297,41 @@ async function handleMessage(
     case 'RESET_TEMPLATE_OVERRIDES': {
       await resetTemplateOverrides();
       await broadcastTemplateOverridesUpdate();
+      return { ok: true };
+    }
+
+    case 'GET_MEMORY_CANDIDATES': {
+      const { status } = (message.payload ?? {}) as { status?: MemoryCandidate['status'] };
+      return getMemoryCandidates(status);
+    }
+
+    case 'ADD_MEMORY_CANDIDATES': {
+      const { candidates } = (message.payload ?? {}) as { candidates?: MemoryCandidate[] };
+      if (!Array.isArray(candidates) || candidates.length === 0) return { added: 0 };
+      // 落库前先与现有记忆比对，避免重复提示用户确认已经记住的内容。
+      const existing = await getAllMemories();
+      const fresh = candidates.filter((candidate) => {
+        const haystack = `${candidate.name} ${candidate.content}`;
+        return !existing.some((memory) => textSimilarity(haystack, `${memory.name} ${memory.content}`) >= 0.7);
+      });
+      const added = await addMemoryCandidates(fresh);
+      if (added > 0) chrome.runtime.sendMessage({ type: 'MEMORY_CANDIDATES_UPDATED' }).catch(() => {});
+      return { added };
+    }
+
+    case 'SET_MEMORY_CANDIDATE_STATUS': {
+      const { id, status } = (message.payload ?? {}) as { id?: string; status?: MemoryCandidate['status'] };
+      if (!id || !status) return { ok: false };
+      await setMemoryCandidateStatus(id, status);
+      chrome.runtime.sendMessage({ type: 'MEMORY_CANDIDATES_UPDATED' }).catch(() => {});
+      return { ok: true };
+    }
+
+    case 'REMOVE_MEMORY_CANDIDATE': {
+      const { id } = (message.payload ?? {}) as { id?: string };
+      if (!id) return { ok: false };
+      await removeMemoryCandidate(id);
+      chrome.runtime.sendMessage({ type: 'MEMORY_CANDIDATES_UPDATED' }).catch(() => {});
       return { ok: true };
     }
 

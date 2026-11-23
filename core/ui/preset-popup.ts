@@ -48,7 +48,10 @@ function onInput() {
     filtered = query === ''
       ? sortPresetsByWeight(presets)
       : sortPresetsByWeight(
-          presets.filter(p => p.name.toLowerCase().includes(query)),
+          presets.filter(p =>
+            (p.name ?? '').toLowerCase().includes(query) ||
+            (p.content ?? '').toLowerCase().includes(query),
+          ),
           query,
         );
 
@@ -101,6 +104,15 @@ function onClickOutside(e: MouseEvent) {
 function selectPreset(preset: SystemPromptPreset) {
   if (!textarea || !preset) return;
 
+  // 片段模式：把内容直接插入正文，不写 `@名称`，也不注入系统提示词。
+  if (preset.insertOnly) {
+    const snippet = (preset.content ?? '').trim();
+    if (!snippet) return;
+    setNativeTextareaValue(textarea, snippet, '@');
+    hidePopup();
+    return;
+  }
+
   // 只把 `@预设名` 作为文案插入输入框，不写入任何激活状态：
   // 该预设仅对当条消息生效，发送时由 fetch-hook 解析（core/preset/mention.ts）。
   setNativeTextareaValue(textarea, `@${preset.name} `, '');
@@ -113,7 +125,7 @@ function showPopup() {
   if (!popupEl) {
     popupEl = document.createElement('div');
     popupEl.className = 'dpp-preset-popup';
-    document.body.appendChild(popupEl);
+    (document.body ?? document.documentElement)?.appendChild(popupEl);
   }
 
   const rect = textarea.getBoundingClientRect();
@@ -149,6 +161,12 @@ function buildItems() {
     desc.textContent = p.content;
 
     head.appendChild(trigger);
+    if (p.insertOnly) {
+      const badge = document.createElement('span');
+      badge.className = 'dpp-preset-badge';
+      badge.textContent = '片段 · 插入正文';
+      head.appendChild(badge);
+    }
     item.append(head, desc);
     item.addEventListener('mouseenter', () => {
       activeIdx = i;
@@ -204,6 +222,17 @@ ${popupChromeCss('preset', 'var(--dpp-preset-bg, #FFFBEB)')}
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.dpp-preset-badge {
+  color: var(--dpp-prompt-color-success, #059669);
+  background: var(--dpp-prompt-bg-success, #ECFDF5);
+  border: 1px solid var(--dpp-prompt-border-success, #A7F3D0);
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .dpp-preset-desc {
   color: var(--dpp-prompt-text-muted, #9CA3AF);

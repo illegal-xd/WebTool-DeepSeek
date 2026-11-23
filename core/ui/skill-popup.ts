@@ -110,7 +110,7 @@ function showPopup() {
   if (!popupEl) {
     popupEl = document.createElement('div');
     popupEl.className = 'dpp-skill-popup';
-    document.body.appendChild(popupEl);
+    (document.body ?? document.documentElement)?.appendChild(popupEl);
   }
 
   const rect = textarea.getBoundingClientRect();

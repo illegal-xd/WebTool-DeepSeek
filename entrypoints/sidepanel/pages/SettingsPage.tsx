@@ -112,6 +112,7 @@ export default function SettingsPage() {
   const [memoryTokenBudget, setMemoryTokenBudget] = useState(MEMORY_TOKEN_BUDGET);
   const [singleMemoryInjection, setSingleMemoryInjection] = useState(false);
   const [customMemoryEnabled, setCustomMemoryEnabled] = useState(false);
+  const [popupDefaultSelectAll, setPopupDefaultSelectAll] = useState(false);
   const [customMemoryPrompt, setCustomMemoryPrompt] = useState(DEFAULT_CUSTOM_MEMORY_PROMPT);
   const [featureVisibility, setFeatureVisibilityState] = useState<FeatureVisibility>(() => getFeatureVisibility());
   const [bgEnabled, setBgEnabled] = useState(false);
@@ -164,6 +165,7 @@ export default function SettingsPage() {
       setMemoryTokenBudget(cfg.tokenBudget);
       setSingleMemoryInjection(cfg.singleMemoryInjection === true);
       setCustomMemoryEnabled(cfg.customMemoryEnabled === true);
+      setPopupDefaultSelectAll(cfg.popupDefaultSelectAll === true);
       setCustomMemoryPrompt(cfg.customMemoryPrompt?.trim() ? cfg.customMemoryPrompt : DEFAULT_CUSTOM_MEMORY_PROMPT);
     });
   }, []);
@@ -183,7 +185,7 @@ export default function SettingsPage() {
     setMemoryTokenBudget(clamped);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: clamped, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt },
+      payload: { tokenBudget: clamped, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll },
     });
   };
 
@@ -191,7 +193,15 @@ export default function SettingsPage() {
     setSingleMemoryInjection(enabled);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled, customMemoryEnabled, customMemoryPrompt },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll },
+    });
+  };
+
+  const handlePopupDefaultSelectAllChange = async (enabled: boolean) => {
+    setPopupDefaultSelectAll(enabled);
+    await chrome.runtime.sendMessage({
+      type: 'SET_MEMORY_CONFIG',
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll: enabled },
     });
   };
 
@@ -201,7 +211,7 @@ export default function SettingsPage() {
     setCustomMemoryPrompt(nextPrompt);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled: enabled, customMemoryPrompt: nextPrompt },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled: enabled, customMemoryPrompt: nextPrompt, popupDefaultSelectAll },
     });
   };
 
@@ -209,7 +219,7 @@ export default function SettingsPage() {
     setCustomMemoryPrompt(prompt);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt: prompt },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt: prompt, popupDefaultSelectAll },
     });
   };
 
@@ -755,6 +765,12 @@ export default function SettingsPage() {
         </h2>
 
         <div className="ds-surface-panel rounded-xl p-4 space-y-3">
+          {/*
+            @Deprecated 2026-11-20 Expert 模式已停用（DeepSeek 内部已优化提示词，
+            插件侧的 model_type 覆盖不再需要）。开关 UI 与注入侧覆盖逻辑均已停用，
+            实现保留在此以便回退；确认无需回退后可删除本注释块、
+            `expertMode` / `handleExpertToggle` 状态与 `SET_MODEL_TYPE` 消息。
+
           <div className="flex justify-between items-center">
             <div>
               <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
@@ -781,6 +797,7 @@ export default function SettingsPage() {
               />
             </button>
           </div>
+          */}
 
           <div className="border-t pt-3 space-y-3" style={{ borderColor: 'var(--ds-border)' }}>
             <div className="flex justify-between items-center">
@@ -856,6 +873,41 @@ export default function SettingsPage() {
               </button>
             </div>
           )}
+
+          {/*
+            @Deprecated 2026-11-20 记忆弹窗已改为单选（一次只插入一条 `#名称`），
+            「默认全选」失去意义，开关停用；`popupDefaultSelectAll` 配置字段保留以兼容旧数据。
+            确认无需回退后可删除本注释块与 `popupDefaultSelectAll` 状态。
+
+{!customMemoryEnabled && (
+            <div className="border-t pt-3 flex justify-between items-center" style={{ borderColor: 'var(--ds-border)' }}>
+              <div>
+                <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                  记忆弹窗默认全选
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                  关闭时（默认）弹窗不勾选任何记忆，需手动选择后才注入
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handlePopupDefaultSelectAllChange(!popupDefaultSelectAll)}
+                aria-pressed={popupDefaultSelectAll}
+                className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
+                style={{
+                  background: popupDefaultSelectAll ? 'var(--ds-blue)' : 'var(--ds-border)',
+                }}
+              >
+                <span
+                  className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                  style={{
+                    transform: popupDefaultSelectAll ? 'translateX(18px)' : 'translateX(0)',
+                  }}
+                />
+              </button>
+            </div>
+          )}
+          */}
 
           {!customMemoryEnabled && (
             <div className="border-t pt-3" style={{ borderColor: 'var(--ds-border)' }}>

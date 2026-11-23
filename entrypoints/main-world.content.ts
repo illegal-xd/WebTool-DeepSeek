@@ -1,14 +1,16 @@
-import { installFetchHook, updateHookState, reprocessStoredHistory, bindPendingSingleInjectionSession } from '../core/interceptor/fetch-hook';
+import { installFetchHook, updateHookState, reprocessStoredHistory, bindPendingSingleInjectionSession, recordMemoryToolRead } from '../core/interceptor/fetch-hook';
 import type { MemoryConfig } from '../core/memory/config';
 import type { TemplateOverrides } from '../core/templates/overrides';
 import { initSkillPopup } from '../core/ui/skill-popup';
 import { initMemoryPopup } from '../core/ui/memory-popup';
 import { initPresetPopup } from '../core/ui/preset-popup';
+// @Archived: [2026-11-20] 上下文注入记录弹窗已下线，原实现见 core/ui/archive/context-capsule.ts
 import { DEFAULT_RECOGNIZED_TOOL_TAGS } from '../core/tool';
 import type { Memory, ModelType, Skill, SystemPromptPreset, ToolCall, ToolCardResult, ToolCallRestoreRecord, ToolDescriptor } from '../core/types';
 
 let latestMemories: Memory[] = [];
 let latestMemoryConfig: MemoryConfig | null = null;
+let latestUserPrompt = '';
 
 export default defineContentScript({
   matches: ['*://chat.deepseek.com/*'],
@@ -19,9 +21,13 @@ export default defineContentScript({
     installFetchHook();
     watchRouteChanges();
 
+    // @Archived: [2026-11-20] 上下文胶囊初始化（initContextCapsule / 排除回调）已随功能下线移除。
     updateHookState({
       onTurnStart() {
         window.postMessage({ source: 'WebTool-DeepSeek-main', type: 'TURN_START' });
+      },
+      onUserPrompt(prompt: string) {
+        latestUserPrompt = prompt;
       },
       onToolCall(call: ToolCall) {
         window.postMessage({
@@ -68,7 +74,9 @@ export default defineContentScript({
           source: 'WebTool-DeepSeek-main',
           type: 'RESPONSE_COMPLETE',
           text: fullText,
+          userPrompt: latestUserPrompt,
         });
+        // @Archived: [2026-11-20] 胶囊的临时排除清理已随功能下线移除。
       },
       onMemoriesUsed(ids: number[]) {
         window.postMessage({
@@ -96,7 +104,22 @@ export default defineContentScript({
     window.addEventListener('message', (event) => {
       if (event.data?.source !== 'WebTool-DeepSeek-content') return;
 
+      // content 上报的工具块渲染状态（保证渲染效果的可观测出口）。
+      if (event.data.type === 'RENDER_STATUS') {
+        const diagnostics = ((window as unknown as Record<string, unknown>).__webtoolDeepseek ?? {}) as Record<string, unknown>;
+        (window as unknown as Record<string, unknown>).__webtoolDeepseek = {
+          ...diagnostics,
+          render: event.data.data,
+        };
+        return;
+      }
+
       switch (event.data.type) {
+        case 'MEMORY_CONTENT_READ': {
+          // memory_get 已读到正文：记录 id，下一次请求把正文以（全文）补注入上下文。
+          recordMemoryToolRead(typeof event.data.key === 'string' ? event.data.key : '');
+          break;
+        }
         case 'SYNC_STATE': {
           const { memories, skills, presets, modelType, toolDescriptors, recognizedToolTags, memoryTokenBudget, memoryConfig, templateOverrides } = event.data as {
             memories: Memory[];
@@ -133,6 +156,18 @@ export default defineContentScript({
           initSkillPopup(skills);
           initMemoryPopup(activeMemoryConfig?.customMemoryEnabled === true ? [] : memories);
           initPresetPopup(presets);
+          // @Archived: [2026-11-20] 胶囊状态同步已随功能下线移除。
+          // 诊断出口：页面 console 输入 __webtoolDeepseek 即可确认注入链路是否就绪
+          // （只暴露数量，不暴露记忆内容）。
+          const diagnostics = ((window as unknown as Record<string, unknown>).__webtoolDeepseek ?? {}) as Record<string, unknown>;
+          (window as unknown as Record<string, unknown>).__webtoolDeepseek = {
+            ...diagnostics,
+            ready: true,
+            tools: toolDescriptors?.length ?? 0,
+            memories: memories?.length ?? 0,
+            presets: presets?.length ?? 0,
+            updatedAt: Date.now(),
+          };
           break;
         }
         case 'TEMPLATES_UPDATED': {
@@ -157,6 +192,7 @@ export default defineContentScript({
               customMemoryPrompt: typeof config.customMemoryPrompt === 'string' ? config.customMemoryPrompt : '',
             });
             initMemoryPopup(config.customMemoryEnabled === true ? [] : latestMemories);
+            // @Archived: [2026-11-20] 胶囊状态同步已随功能下线移除。
           }
           break;
         }
@@ -164,7 +200,10 @@ export default defineContentScript({
           // content 在触发自动续聊前设置挂起的 continuation prompt，
           // fetch-hook 拦截到下一个 completion 请求时用它替换用户输入。
           const prompt = typeof event.data.prompt === 'string' ? event.data.prompt : null;
-          updateHookState({ pendingContinuationPrompt: prompt });
+          updateHookState({
+            pendingContinuationPrompt: prompt,
+            pendingContinuationAt: prompt ? Date.now() : 0,
+          });
           break;
         }
       }

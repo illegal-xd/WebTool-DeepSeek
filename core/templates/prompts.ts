@@ -11,6 +11,13 @@
 // ─── 系统模板（记忆注入主模板） ────────────────────────────────────
 
 /**
+ * 记忆读取说明（并入系统模板「## 使用说明」，不单独成段）。
+ * 「已知信息」里的（全文）/（仅标题）标注含义 + memory_get 用法 + 自动回传规则。
+ */
+export const MEMORY_USAGE_READ_LINE =
+  '- 「已知信息」中标注 `（全文）` 的记忆已带完整正文可直接使用；标注 `（仅标题）` 的只有标题索引。只有用户明确要查看某条记忆的具体内容时，才调用 memory_get（key 填记忆 ID 如 `#89` 或标题）；不要凭标题猜测记忆内容，读取到的正文会自动回传继续处理，无需用户再次发送消息。';
+
+/**
  * 系统模板（普通模式）。
  * 设计原则：中性化角色声明，不做能力限制；记忆与工具作为「附加上下文」；
  * 明确保持原生能力（联网搜索/推理）不变。
@@ -30,7 +37,8 @@ export const SYSTEM_TEMPLATE_CHAT = `{{memoryContext}}
 ## 使用说明
 
 - 你的其他能力（联网搜索、实时信息获取、推理）保持正常，用户的问题请优先按你本来的方式处理。
-- 未注入「已知信息」不代表记忆库为空；当用户要求查看、检索或引用历史记忆，且存在记忆查询或列表工具时，应主动调用对应工具确认。
+- 未注入「已知信息」不代表记忆库为空；列出/浏览记忆时直接使用「已知信息」中的标题索引回答，不要调用 memory_get 逐条读取。
+${MEMORY_USAGE_READ_LINE}
 - 若用户明确要求"记住"或对话中有值得长期保留的信息，可在回复任意位置调用 memory_save 工具保存，不影响回答本身。
 - 若「已知信息」中出现与某项预设高度相关的记忆，请结合该预设的指令与记忆内容一同回答。
 
@@ -51,7 +59,8 @@ export const SYSTEM_TEMPLATE_THINKING = `{{memoryContext}}
 ## 使用说明
 
 - 你的其他能力（联网搜索、实时信息获取、推理）保持正常，用户的问题请优先按你本来的方式处理。
-- 未注入「已知信息」不代表记忆库为空；当用户要求查看、检索或引用历史记忆，且存在记忆查询或列表工具时，应主动调用对应工具确认。
+- 未注入「已知信息」不代表记忆库为空；列出/浏览记忆时直接使用「已知信息」中的标题索引回答，不要调用 memory_get 逐条读取。
+${MEMORY_USAGE_READ_LINE}
 - 若用户明确要求"记住"或对话中有值得长期保留的信息，可在回复任意位置调用 memory_save 工具保存。
 - 若「已知信息」中出现与某项预设高度相关的记忆，请结合该预设的指令与记忆内容一同回答。
 
@@ -61,6 +70,10 @@ export const SYSTEM_TEMPLATE_THINKING = `{{memoryContext}}
 
 // 渲染内置技能的 {{memoryUpdateSchema}} / {{memoryDeleteSchema}} 占位符（core/skill/builtin.ts）；
 // 其余场景请使用 MEMORY_TOOL_DESCRIPTORS（core/tool/memory.ts）结构化定义。
+export const MEMORY_LIST_SCHEMA = '{"type": "function", "function": {"name": "memory_list", "description": "列出记忆标题（含 ID 与类型，不含正文）", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "按标题或标签过滤"}, "limit": {"type": "integer", "description": "返回条数上限（默认 50）"}}, "required": []}}}';
+
+export const MEMORY_GET_SCHEMA = '{"type": "function", "function": {"name": "memory_get", "description": "读取单条记忆的完整正文、标签与元数据", "parameters": {"type": "object", "properties": {"key": {"type": "string", "description": "记忆 ID（如 89 或 #89）或标题"}}, "required": ["key"]}}}';
+
 export const MEMORY_UPDATE_SCHEMA = '{"type": "function", "function": {"name": "memory_update", "description": "更新已有记忆", "parameters": {"type": "object", "properties": {"id": {"type": "integer", "description": "记忆ID"}, "type": {"type": "string", "enum": ["user", "feedback", "topic", "reference"], "description": "记忆类型"}, "name": {"type": "string", "description": "更新后的标题"}, "content": {"type": "string", "description": "更新后的内容"}, "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表"}}, "required": ["id", "type", "name", "content", "tags"]}}}';
 
 export const MEMORY_DELETE_SCHEMA = '{"type": "function", "function": {"name": "memory_delete", "description": "删除记忆", "parameters": {"type": "object", "properties": {"id": {"type": "integer", "description": "记忆ID"}}, "required": ["id"]}}}';
@@ -93,8 +106,7 @@ export const TOOL_MUST_FOLLOW_LINE =
  */
 export const TOOL_SCHEMA_TEMPLATE = `### 工具 {{invocationName}}
 标题：{{title}}
-描述：{{description}}
-{{invocationName}} 的合法调用格式：
+描述：{{description}} {{invocationName}} 的合法调用格式：
 <{{invocationName}}>
 {{examplePayload}}
 </{{invocationName}}>
@@ -105,7 +117,6 @@ export const TOOL_SCHEMA_TEMPLATE = `### 工具 {{invocationName}}
  * 工具调用格式提醒（注入末尾的轻量 reminder）。占位符：{{names}}。
  */
 export const TOOL_FORMAT_REMINDER_TEMPLATE = `
-
 ---
 工具调用格式提醒：
 可用的工具标签名：{{names}}

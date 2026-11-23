@@ -82,6 +82,22 @@ function getMcpToolDisplay(tool: McpToolDefinition): { title: string; descriptio
     crawl_webpage: { title: '抓取网页', description: '抓取指定网页并提取可阅读的纯文本内容。' },
     'resolve-library-id': { title: '解析文档库 ID', description: '通过 Context7 根据库名和问题查找可用的文档库 ID。' },
     'query-docs': { title: '查询文档', description: '通过 Context7 查询指定文档库中的相关技术文档内容。' },
+    // delx-memory 等本地记忆 MCP：让工具列表里的描述可读且说明「列表只给标题、正文按需读取」。
+    memory_list: { title: '列出记忆标题', description: '列出记忆库中的记忆标题（key，不含正文），支持标题前缀/标签/更新时间过滤。' },
+    memory_get: { title: '读取记忆全文', description: '按 key 读取单条记忆的完整内容、标签与元数据。' },
+    memory_get_many: { title: '批量读取记忆', description: '按 key 批量读取记忆（最多 50 条），缺失的 key 自动跳过。' },
+    memory_search: { title: '检索记忆', description: '全文检索记忆的标题、正文与标签，返回匹配条目与内容片段。' },
+    memory_stats: { title: '记忆库概况', description: '返回记忆总数、数据库大小与存储路径。' },
+    memory_handoff: { title: '记忆交接摘要', description: '返回记忆库概况与最近更新的记忆列表（可选正文），用于会话开始恢复上下文。' },
+    memory_set: { title: '写入记忆', description: '按 key 新增或覆盖一条记忆（需显式用户意图）。' },
+    memory_set_batch: { title: '批量写入记忆', description: '在一个事务中批量写入最多 50 条记忆。' },
+    memory_forget: { title: '删除记忆', description: '删除指定 key 的记忆，幂等。' },
+    memory_forget_by_tag: { title: '按标签删除记忆', description: '删除所有带指定标签的记忆。' },
+    memory_export: { title: '导出记忆', description: '导出整个记忆库（JSON/JSONL/Markdown），需显式用户意图。' },
+    memory_connection_status: { title: '记忆连接状态', description: '返回本地记忆库路径是否就绪与文件大小。' },
+    memory_capabilities: { title: '记忆能力说明', description: '返回该 MCP 的能力与隐私模式说明。' },
+    memory_data_inventory: { title: '记忆数据清单', description: '返回记忆域、隐私模式与推荐的首批调用。' },
+    memory_agent_manifest: { title: 'Agent 安装说明', description: '返回面向 AI Agent 的安装与操作说明。' },
   };
   const known = displayByName[tool.name];
   if (known) return known;

@@ -40,9 +40,22 @@ interface HookState {
   _lastChatSessionId: string | null;
   _singleInjectionSessionIds: Set<string>;
   _sessionInjectionRecords: Map<string, SessionInjectionRecord>;
+  /** 当前对话上下文中已注入过「完整内容」的记忆 id（供 `#` 弹窗标记「已注入」）。 */
+  _injectedMemoryIdsForContext: Set<number>;
+  /** 当前对话已出现过（索引或全文）的记忆 id，用于自动注入跨轮去重。 */
+  _contextIndexedMemoryIds: Set<number>;
+  /** 本对话通过 memory_get 读过正文的记忆 id：下一轮补注入全文，避免重复调用。 */
+  _memoryContentReadIds: Set<number>;
   onToolCall: (call: ToolCall) => void;
   onResponseComplete: (fullText: string) => void;
   onTurnStart: () => void;
+  /** 每轮用户输入（已剥离 @mention）回调，供被动记忆候选提炼使用。 */
+  onUserPrompt: (prompt: string) => void;
+  /**
+   * @Deprecated 2026-11-20 上下文胶囊已停用，该集合恒为空。
+   * 保留字段以便功能回退。
+   */
+  excludedMemoryIds: Set<number>;
   onMemoriesUsed: (ids: number[]) => void;
   onToolCallExecuted: (call: ToolCall) => Promise<ToolCardResult>;
   onToolCallsRestored: (records: ToolCallRestoreRecord[]) => void;
@@ -50,6 +63,8 @@ interface HookState {
   onInjectionEvent?: (event: InjectionEvent) => void;
   /** 续聊请求挂起的 continuation prompt；非空时跳过常规注入并以此替换用户输入。 */
   pendingContinuationPrompt: string | null;
+  /** 续聊 prompt 的设置时间：用于丢弃超时未发送的残留（否则会污染后续新对话）。 */
+  pendingContinuationAt: number;
 }
 
 let hookState: HookState = {
@@ -66,14 +81,20 @@ let hookState: HookState = {
   _lastChatSessionId: null,
   _singleInjectionSessionIds: new Set(),
   _sessionInjectionRecords: new Map(),
+  _injectedMemoryIdsForContext: new Set(),
+  _contextIndexedMemoryIds: new Set(),
+  _memoryContentReadIds: new Set(),
   onToolCall: () => {},
   onResponseComplete: () => {},
   onTurnStart: () => {},
+  onUserPrompt: () => {},
+  excludedMemoryIds: new Set(),
   onMemoriesUsed: () => {},
   onToolCallExecuted: async () => ({ ok: true, summary: '已识别' }),
   onToolCallsRestored: () => {},
   onSkillUsed: () => {},
   pendingContinuationPrompt: null,
+  pendingContinuationAt: 0,
 };
 
 function readSingleInjectionSessionIds(): Set<string> {
@@ -134,6 +155,116 @@ function getOrCreateSessionRecord(sessionId: string): SessionInjectionRecord {
     hookState._sessionInjectionRecords.set(sessionId, record);
   }
   return record;
+}
+
+/**
+ * 诊断开关：页面 localStorage 设置 `webtool_debug=1` 后，
+ * 在 Console 输出注入路径 / 工具描述符数量 / 识别到的工具调用，便于定位「不渲染」。
+ */
+function debugLog(event: string, detail: Record<string, unknown>): void {
+  try {
+    if (window.localStorage.getItem('webtool_debug') !== '1') return;
+    console.info(`[WebTool-DeepSeek] ${event}`, detail);
+  } catch {
+    // 诊断日志失败不影响主流程
+  }
+}
+
+/** 自动续聊 prompt 的有效期：超时未发送则丢弃，避免回放到新对话。 */
+const CONTINUATION_PROMPT_TTL_MS = 30_000;
+
+const CONTEXT_INJECTED_STORAGE_KEY = 'webtool_deepseek_context_injected_memory_ids';
+const MAX_PERSISTED_CONTEXT_SESSIONS = 10;
+
+/**
+ * 已注入「完整内容」的上下文记录。
+ *
+ * 记忆全文一旦注入，其内容就留在本对话历史里，模型后续可直接读到；
+ * 再次注入只是浪费预算。这里记录「本对话已注入过全文的记忆」，
+ * 供 `#` 弹窗标记为「已注入」并禁止勾选。仅索引注入（只有标题）不算。
+ */
+function markMemoriesInjected(ids: readonly number[]): void {
+  if (ids.length === 0) return;
+  for (const id of ids) hookState._injectedMemoryIdsForContext.add(id);
+  persistContextInjections();
+}
+
+/** 记录本对话已出现过的记忆 id（索引或全文），用于自动注入跨轮去重。 */
+function rememberContextMemoryIds(ids: readonly number[]): void {
+  for (const id of ids) hookState._contextIndexedMemoryIds.add(id);
+}
+
+/**
+ * 记录 `memory_get` 已读到正文的记忆（按 key = ID / #ID / 标题匹配）。
+ *
+ * 只查看记忆时不会自动续聊，正文需要在下一次请求时补注入上下文，
+ * 否则 agent 只能看到「（仅标题）」索引，会反复调用 memory_get。
+ */
+export function recordMemoryToolRead(key: string): void {
+  const trimmed = key.trim();
+  if (!trimmed) return;
+  const numeric = Number(trimmed.replace(/^#/, ''));
+  const lower = trimmed.toLowerCase();
+  const found = (Number.isFinite(numeric) && numeric > 0
+    ? hookState.memories.find((memory) => memory.id === numeric)
+    : undefined)
+    ?? hookState.memories.find((memory) => memory.name.toLowerCase() === lower)
+    ?? hookState.memories.find((memory) => memory.name.toLowerCase().startsWith(lower));
+  if (found?.id != null) hookState._memoryContentReadIds.add(found.id);
+}
+
+/**
+ * 自动注入的记忆只对「静默记忆」标记已注入：非静默记忆只有标题索引，
+ * 正文仍需 memory_get 读取，不能禁止用户在 `#` 弹窗中再选它注入全文。
+ */
+function markMemoriesInjectedForContent(ids: readonly number[]): void {
+  const fullIds = ids.filter((id) => hookState.memories.some((memory) => memory.id === id && memory.silentInject === true));
+  if (fullIds.length > 0) markMemoriesInjected(fullIds);
+}
+
+function persistContextInjections(): void {
+  const sessionId = hookState._lastChatSessionId;
+  if (!sessionId) return;
+  try {
+    const raw = window.sessionStorage.getItem(CONTEXT_INJECTED_STORAGE_KEY);
+    const store = raw ? JSON.parse(raw) as Record<string, number[]> : {};
+    store[sessionId] = [...hookState._injectedMemoryIdsForContext];
+    const keys = Object.keys(store);
+    if (keys.length > MAX_PERSISTED_CONTEXT_SESSIONS) {
+      for (const key of keys.slice(0, keys.length - MAX_PERSISTED_CONTEXT_SESSIONS)) delete store[key];
+    }
+    window.sessionStorage.setItem(CONTEXT_INJECTED_STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // 持久化失败不影响注入
+  }
+}
+
+/** 当前地址栏所在对话的 session id；新对话页没有 `/chat/s/{id}`，返回 null。 */
+function getRouteChatSessionId(): string | null {
+  const match = window.location.pathname.match(/\/chat\/s\/([^/?#]+)/);
+  return match?.[1] ?? null;
+}
+
+/** 当前对话上下文中已注入的记忆 id（内存 + 本标签页持久化）。 */
+export function getInjectedMemoryIdsForContext(): number[] {
+  // 新对话页还没有 session id：上下文是空的。若继续回退到
+  // `_lastChatSessionId`，会继承上一个对话的注入记录，把旧记忆标成
+  // 「已注入」而在新对话里无法选择。
+  const routeSessionId = getRouteChatSessionId();
+  if (!routeSessionId) return [];
+  const ids = new Set<number>();
+  // 内存集合只在它确实属于当前对话时使用，避免切对话瞬间串台。
+  if (hookState._lastChatSessionId === routeSessionId) {
+    for (const id of hookState._injectedMemoryIdsForContext) ids.add(id);
+  }
+  try {
+    const raw = window.sessionStorage.getItem(CONTEXT_INJECTED_STORAGE_KEY);
+    const store = raw ? JSON.parse(raw) as Record<string, number[]> : {};
+    for (const id of store[routeSessionId] ?? []) ids.add(id);
+  } catch {
+    // 忽略损坏的持久化数据
+  }
+  return [...ids];
 }
 
 function shouldUseSingleMemoryInjection(): boolean {
@@ -298,7 +429,7 @@ function isChatCompletionURL(url: string): boolean {
 }
 
 interface MemoryCommandContext {
-  memory: Memory;
+  memories: Memory[];
   args: string;
   presetInstruction: string;
   effectivePreset: SystemPromptPreset | null;
@@ -307,11 +438,15 @@ interface MemoryCommandContext {
 
 /** `#记忆名` 显式手动注入路径：记忆背景 + （可选）预设关联 + 用户正文。 */
 function applyMemoryCommand(body: Record<string, unknown>, context: MemoryCommandContext): string {
-  const { memory, args, presetInstruction, effectivePreset, thinkingEnabled } = context;
+  const { memories, args, presetInstruction, effectivePreset, thinkingEnabled } = context;
 
-  const memoryInstruction = wrapMemoryInput(memory.name, memory.content, '');
-  // 记忆内容与当前预设高度重合时，关联注入对应的预设指令。
-  const linkedPreset = findPresetForMemory(memory, effectivePreset ? [effectivePreset] : []);
+  const memoryInstruction = memories
+    .map((memory) => wrapMemoryInput(memory.name, memory.content, ''))
+    .join('\n\n');
+  // 任一记忆内容与当前预设高度重合时，关联注入对应的预设指令。
+  const linkedPreset = memories
+    .map((memory) => findPresetForMemory(memory, effectivePreset ? [effectivePreset] : []))
+    .find((preset): preset is SystemPromptPreset => Boolean(preset)) ?? null;
   const linkedInstruction = linkedPreset
     ? `<关联预设：${linkedPreset.name}（记忆内容与该预设高度重合，请结合其指令回答）>\n\n${linkedPreset.content}`
     : '';
@@ -324,12 +459,14 @@ function applyMemoryCommand(body: Record<string, unknown>, context: MemoryComman
   });
 
   body.prompt = augmented;
-  if (memory.id != null) {
-    hookState.onMemoriesUsed([memory.id]);
+  const usedIds = memories.map((memory) => memory.id).filter((id): id is number => id != null);
+  if (usedIds.length > 0) {
+    hookState.onMemoriesUsed(usedIds);
+    markMemoriesInjected(usedIds);
   }
   emitInjectionEvent(
     'memory',
-    `记忆注入：${memory.name}`,
+    `记忆注入：${memories.map((memory) => memory.name).join('、')}`,
     linkedPreset
       ? `已关联预设「${linkedPreset.name}」`
       : (hasMcpTools() ? '含 MCP 工具描述符' : undefined),
@@ -349,11 +486,40 @@ export function modifyRequestBody(bodyStr: string): string | null {
   const rawPrompt = (body.prompt as string) || '';
   if (!rawPrompt) return null;
 
+  // 会话标识与会话级状态必须先确定：后续记忆选择依赖「本对话已注入」集合。
+  const chatSessionId = typeof body.chat_session_id === 'string' ? body.chat_session_id : null;
+  const hasConcreteParentMessage = body.parent_message_id !== null && body.parent_message_id !== undefined;
+  const isNewConversation = !hasConcreteParentMessage;
+
+  // 新对话：清空上一个对话的注入状态（尤其是 sessionId 未知时的 PENDING 槽位），
+  // 否则会继承「已注入过」的判定，导致静默注入/首轮注入被跳过。
+  if (isNewConversation) {
+    hookState._sessionInjectionRecords.delete(PENDING_SINGLE_INJECTION_SESSION);
+    hookState._singleInjectionSessionIds.delete(PENDING_SINGLE_INJECTION_SESSION);
+    hookState._injectedMemoryIdsForContext.clear();
+    hookState._contextIndexedMemoryIds.clear();
+    hookState._memoryContentReadIds.clear();
+    hookState._lastChatSessionId = chatSessionId;
+  } else if (chatSessionId !== null && chatSessionId !== hookState._lastChatSessionId) {
+    // 切换到另一个已有对话：上下文里已注入的记忆集合重新开始累计。
+    hookState._lastChatSessionId = chatSessionId;
+    hookState._injectedMemoryIdsForContext.clear();
+    hookState._contextIndexedMemoryIds.clear();
+    hookState._memoryContentReadIds.clear();
+  }
+
   // 自动续聊请求：用挂起的 continuation prompt 替换用户输入，跳过常规记忆/预设注入。
+  // 仅在「同一对话的紧接着的请求」内生效；新对话或超时立即丢弃。
   if (hookState.pendingContinuationPrompt) {
-    body.prompt = hookState.pendingContinuationPrompt;
+    const fresh = Date.now() - hookState.pendingContinuationAt < CONTINUATION_PROMPT_TTL_MS;
+    if (fresh && !isNewConversation) {
+      body.prompt = hookState.pendingContinuationPrompt;
+      hookState.pendingContinuationPrompt = null;
+      hookState.pendingContinuationAt = 0;
+      return JSON.stringify(body);
+    }
     hookState.pendingContinuationPrompt = null;
-    return JSON.stringify(body);
+    hookState.pendingContinuationAt = 0;
   }
 
   // 输入框开头的 `@预设名` 只对当条消息生效（与 /skill、#记忆 一致，不保留任何激活状态）：
@@ -363,24 +529,44 @@ export function modifyRequestBody(bodyStr: string): string | null {
   const effectivePreset = mention?.preset ?? null;
   const presetInstruction = effectivePreset?.content ?? '';
 
+  // 上下文胶囊的临时排除：在注入前剔除，被剔除条目的预算会让给其他记忆。
+  const availableMemories = hookState.excludedMemoryIds.size > 0
+    ? hookState.memories.filter((memory) => memory.id == null || !hookState.excludedMemoryIds.has(memory.id))
+    : hookState.memories;
+
+  // 自动注入：本对话未出现过的记忆全部以「索引」注入（标题 + id + 标签），
+  // 静默记忆除外——它们在渲染时带完整正文。正文由 memory_get 按需读取。
+  const injectedIds = getInjectedMemoryIdsForContext();
+  const autoInjectMemories = availableMemories.filter(
+    (memory) => memory.id == null
+      || (!hookState._contextIndexedMemoryIds.has(memory.id) && !injectedIds.includes(memory.id)),
+  );
+  // 增强回调（被动记忆捕获）失败不得影响注入主流程与工具 schema 注入。
+  try {
+    hookState.onUserPrompt(originalPrompt);
+  } catch {
+    // ignore
+  }
+  debugLog('request', {
+    tools: hookState.toolDescriptors.length,
+    memories: hookState.memories.length,
+    customMemory: hookState.customMemoryEnabled,
+    promptChars: originalPrompt.length,
+  });
+
   const thinkingEnabled = body.thinking_enabled === true;
-  const chatSessionId = typeof body.chat_session_id === 'string' ? body.chat_session_id : null;
-  const hasConcreteParentMessage = body.parent_message_id !== null && body.parent_message_id !== undefined;
-  const isFirstMessage = !hasConcreteParentMessage;
 
-  if (chatSessionId !== null) {
-    hookState._lastChatSessionId = chatSessionId;
-  }
+  // @Deprecated 2026-11-20 Expert 模式已停用：不再覆盖请求体的 model_type，
+  // 交由 DeepSeek 页面自身选择。保留 hookState.modelType 字段以便回退。
+  // if (hookState.modelType) {
+  //   body.model_type = hookState.modelType;
+  // }
 
-  if (hookState.modelType) {
-    body.model_type = hookState.modelType;
-  }
-
-  const memInvocation = hookState.customMemoryEnabled ? null : parseMemoryCommand(originalPrompt, hookState.memories);
+  const memInvocation = hookState.customMemoryEnabled ? null : parseMemoryCommand(originalPrompt, availableMemories);
   // `#记忆名` 是显式手动注入路径，不参与普通自动记忆的单次去重。
   if (memInvocation) {
     return applyMemoryCommand(body, {
-      memory: memInvocation.memory,
+      memories: memInvocation.memories,
       args: memInvocation.args,
       presetInstruction,
       effectivePreset,
@@ -414,6 +600,8 @@ export function modifyRequestBody(bodyStr: string): string | null {
       body.prompt = augmented;
       if (usedMemoryIds.length > 0) {
         hookState.onMemoriesUsed(usedMemoryIds);
+        rememberContextMemoryIds(usedMemoryIds);
+        markMemoriesInjectedForContent(usedMemoryIds);
       }
       hookState.onSkillUsed(invocation.skillName);
       emitInjectionEvent('skill', `技能注入：/${invocation.skillName}`, usedMemoryIds.length > 0 ? `关联记忆 ${usedMemoryIds.length} 条` : undefined, augmented);
@@ -421,7 +609,7 @@ export function modifyRequestBody(bodyStr: string): string | null {
     }
   }
 
-  let targetMemories = hookState.memories;
+  let targetMemories = autoInjectMemories;
 
   if (hookState.customMemoryEnabled) {
     const { augmented } = buildCustomMemoryModePrompt(originalPrompt, presetInstruction);
@@ -471,6 +659,24 @@ export function modifyRequestBody(bodyStr: string): string | null {
     targetMemories = resolvePresetMemories(effectivePreset);
   }
 
+  // memory_get 读过的记忆：下一轮以（全文）补注入，避免 agent 只看到标题索引而重复调用。
+  const readMemoryIds = hookState._memoryContentReadIds;
+  if (readMemoryIds.size > 0) {
+    const existingIds = new Set(targetMemories.map((memory) => memory.id));
+    for (const memory of availableMemories) {
+      if (memory.id != null && readMemoryIds.has(memory.id) && !existingIds.has(memory.id)) {
+        targetMemories.push(memory);
+      }
+    }
+  }
+  const injectionMemories = readMemoryIds.size > 0
+    ? targetMemories.map((memory) => (
+        memory.id != null && readMemoryIds.has(memory.id) ? { ...memory, silentInject: true } : memory
+      ))
+    : targetMemories;
+  const excludeMemoryIds = new Set(sessionRecord.injectedMemoryIds);
+  for (const id of readMemoryIds) excludeMemoryIds.delete(id);
+
   const relatedIds = effectivePreset
     ? collectPresetRelatedMemoryIds(targetMemories, effectivePreset)
     : undefined;
@@ -481,7 +687,7 @@ export function modifyRequestBody(bodyStr: string): string | null {
 
   if (needSystemTemplate) {
     // 首轮：完整系统模板（记忆+工具 schema+预设+格式提醒）。
-    const result = buildAugmentedPrompt(originalPrompt, targetMemories, {
+    const result = buildAugmentedPrompt(originalPrompt, injectionMemories, {
       thinkingEnabled,
       tokenBudget: hookState.memoryTokenBudget,
       toolDescriptors: hookState.toolDescriptors,
@@ -497,10 +703,10 @@ export function modifyRequestBody(bodyStr: string): string | null {
     }
   } else {
     // 后续轮次：轻量补充——仅本轮新选中记忆 + 未注入的预设变更。
-    const result = buildLightweightMemoryPrompt(originalPrompt, targetMemories, {
+    const result = buildLightweightMemoryPrompt(originalPrompt, injectionMemories, {
       instructionBlock: needPreset ? presetInstruction : '',
       tokenBudget: hookState.memoryTokenBudget,
-      excludeMemoryIds: sessionRecord.injectedMemoryIds,
+      excludeMemoryIds,
       toolDescriptors: hookState.toolDescriptors,
     });
     augmented = result.augmented;
@@ -517,14 +723,29 @@ export function modifyRequestBody(bodyStr: string): string | null {
 
   if (usedMemoryIds.length > 0) {
     hookState.onMemoriesUsed(usedMemoryIds);
+    rememberContextMemoryIds(usedMemoryIds);
+    // 非静默记忆只注入了索引，正文仍需 memory_get，不能标记为「已注入」。
+    markMemoriesInjectedForContent(usedMemoryIds);
+    // memory_get 读过的记忆本轮以全文补注入：标记已注入，避免下一轮再补。
+    const readInjected = usedMemoryIds.filter((id) => readMemoryIds.has(id));
+    if (readInjected.length > 0) {
+      markMemoriesInjected(readInjected);
+      for (const id of readInjected) hookState._memoryContentReadIds.delete(id);
+    }
   }
 
   const detailParts = [
     usedMemoryIds.length > 0 ? `命中记忆 ${usedMemoryIds.length} 条` : null,
     needPreset ? '含预设指令' : null,
     hasRelatedMark ? '含预设关联标注' : null,
-    needSystemTemplate ? (hasMcpTools() ? '含 MCP 工具描述符' : null) : '去重·轻量补充',
+    needSystemTemplate ? `工具 ${hookState.toolDescriptors.length} 个${hasMcpTools() ? '（含 MCP）' : ''}` : '去重·轻量补充',
   ].filter(Boolean);
+  debugLog('inject', {
+    mode: needSystemTemplate ? 'full' : 'light',
+    tools: hookState.toolDescriptors.length,
+    memories: usedMemoryIds.length,
+    promptChars: augmented.length,
+  });
   emitInjectionEvent('memory', '记忆注入', detailParts.join('；') || undefined, augmented);
   return JSON.stringify(body);
 }
@@ -686,6 +907,7 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
 function notifyNewToolCalls(fullText: string, alreadyNotified: number): number {
   const calls = extractToolCalls(fullText, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
   for (let i = alreadyNotified; i < calls.length; i++) {
+    debugLog('tool-call', { name: calls[i].name, total: calls.length, textChars: fullText.length });
     hookState.onToolCall(calls[i]);
   }
   return calls.length;
@@ -1155,44 +1377,59 @@ function createDynamicToolRegex(): RegExp {
 // ─── Memory Command Parsing ────────────────────────────────────────
 
 interface MemoryInvocation {
-  memory: Memory;
+  memories: Memory[];
   args: string;
   rawInput: string;
 }
 
-function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation | null {
-  if (!input.startsWith('#')) return null;
+const MAX_MEMORY_COMMAND_ENTRIES = 20;
 
+/** 匹配输入开头的一个 `#名称` / `#id`，返回记忆与剩余文本。导出给 `#` 弹窗复用同一解析规则。 */
+export function matchLeadingMemory(input: string, sortedMemories: Memory[]): { memory: Memory; rest: string } | null {
   const inputLower = input.toLowerCase();
-  const sortedMemories = [...memories].sort((a, b) => b.name.length - a.name.length);
 
-  for (const m of sortedMemories) {
-    const prefixName = `#${m.name.toLowerCase()}`;
-    if (inputLower === prefixName) {
-      return { memory: m, args: '', rawInput: input };
-    }
-    if (inputLower.startsWith(prefixName + ' ')) {
-      return { memory: m, args: input.slice(prefixName.length + 1), rawInput: input };
-    }
-    if (inputLower.startsWith(prefixName + '\n')) {
-      return { memory: m, args: input.slice(prefixName.length + 1), rawInput: input };
-    }
+  for (const memory of sortedMemories) {
+    const prefixes = [`#${memory.name.toLowerCase()}`];
+    if (memory.id != null) prefixes.push(`#${memory.id}`);
 
-    if (m.id != null) {
-      const prefixId = `#${m.id}`;
-      if (inputLower === prefixId) {
-        return { memory: m, args: '', rawInput: input };
-      }
-      if (inputLower.startsWith(prefixId + ' ')) {
-        return { memory: m, args: input.slice(prefixId.length + 1), rawInput: input };
-      }
-      if (inputLower.startsWith(prefixId + '\n')) {
-        return { memory: m, args: input.slice(prefixId.length + 1), rawInput: input };
+    for (const prefix of prefixes) {
+      if (inputLower === prefix) return { memory, rest: '' };
+      if (inputLower.startsWith(prefix + ' ') || inputLower.startsWith(prefix + '\n')) {
+        return { memory, rest: input.slice(prefix.length + 1) };
       }
     }
   }
 
   return null;
+}
+
+/**
+ * `#记忆名` 显式手动注入。支持一条消息注入多条：`#记忆A #记忆B 正文`
+ * （弹窗多选后写入即为该形态）。
+ */
+function parseMemoryCommand(input: string, memories: Memory[]): MemoryInvocation | null {
+  if (!input.startsWith('#')) return null;
+
+  const sortedMemories = [...memories].sort((a, b) => b.name.length - a.name.length);
+  const matched: Memory[] = [];
+  const matchedKeys = new Set<string>();
+  let rest = input;
+
+  for (let guard = 0; guard < MAX_MEMORY_COMMAND_ENTRIES; guard += 1) {
+    const parsed = matchLeadingMemory(rest, sortedMemories);
+    if (!parsed) break;
+
+    const key = parsed.memory.id != null ? `id:${parsed.memory.id}` : `name:${parsed.memory.name}`;
+    if (!matchedKeys.has(key)) {
+      matchedKeys.add(key);
+      matched.push(parsed.memory);
+    }
+    rest = parsed.rest;
+    if (!rest.startsWith('#')) break;
+  }
+
+  if (matched.length === 0) return null;
+  return { memories: matched, args: rest, rawInput: input };
 }
 
 function wrapMemoryInput(memoryName: string, memoryContent: string, userInput: string): string {

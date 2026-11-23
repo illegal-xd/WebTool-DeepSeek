@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SystemPromptPreset } from '../../../core/types';
 import { sortPresetsByWeight } from '../../../core/weighting';
 import PresetCard from '../components/PresetCard';
@@ -12,6 +12,7 @@ export default function PresetPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<SystemPromptPreset | undefined>();
   const [isFormWide, setIsFormWide] = useState(false);
+  const [query, setQuery] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -88,6 +89,17 @@ export default function PresetPage() {
     setIsFormWide(false);
   };
 
+  // 片段/预设共用同一列表：按名称与内容搜索，便于积累大量片段后快速定位。
+  const visiblePresets = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) return presets;
+    return presets.filter(
+      (preset) =>
+        preset.name.toLowerCase().includes(keyword) ||
+        preset.content.toLowerCase().includes(keyword),
+    );
+  }, [presets, query]);
+
   return (
     <div className="p-4 space-y-4">
       <div
@@ -100,7 +112,7 @@ export default function PresetPage() {
         }}
       >
         <h2 className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
-          系统提示词预设
+          预设与片段
         </h2>
         <div className="flex items-center gap-1.5 shrink-0">
           <input
@@ -133,6 +145,15 @@ export default function PresetPage() {
         </div>
       </div>
 
+      <input
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="搜索预设或片段（名称 / 内容）..."
+        className="w-full px-3 py-2 text-xs rounded-lg border outline-none transition-colors focus:border-[var(--ds-blue)]"
+        style={{ background: 'var(--ds-bg)', borderColor: 'var(--ds-border)', color: 'var(--ds-text)' }}
+      />
+
       <SidepanelModal open={showForm} title={editing ? '编辑系统预设' : '新建系统预设'} maxWidth={isFormWide ? 'lg' : 'md'} onClose={handleCancel}>
         <PresetForm
           key={editing ? `edit-${editing.id}` : 'new'}
@@ -147,7 +168,7 @@ export default function PresetPage() {
         {loading ? (
           <Skeleton lines={3} />
         ) : (
-          sortPresetsByWeight(presets).map((p) => (
+          sortPresetsByWeight(visiblePresets).map((p) => (
             <PresetCard
               key={p.id}
               preset={p}
@@ -157,6 +178,12 @@ export default function PresetPage() {
           ))
         )}
       </div>
+
+      {!loading && visiblePresets.length > 0 && visiblePresets.length < presets.length && (
+        <div className="text-[11px] text-center" style={{ color: 'var(--ds-text-tertiary)' }}>
+          匹配 {visiblePresets.length} / {presets.length} 条
+        </div>
+      )}
 
       {presets.length === 0 && !showForm && (
         <div className="ds-info-panel rounded-xl p-3.5">

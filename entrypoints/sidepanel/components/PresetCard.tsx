@@ -17,7 +17,19 @@ export default function PresetCard({ preset, onEdit, onDelete }: Props) {
           <span className="text-[13px] font-medium" style={{ color: 'var(--ds-text)' }}>
             {preset.name}
           </span>
-          {preset.memoryEnabled && (
+          {preset.insertOnly && (
+            <span
+              className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+              style={{
+                backgroundColor: 'var(--ds-success-bg, #ECFDF5)',
+                color: 'var(--ds-success, #059669)',
+                border: '1px solid rgba(5,150,105,0.15)',
+              }}
+            >
+              片段 · 插入正文
+            </span>
+          )}
+          {!preset.insertOnly && preset.memoryEnabled && (
             <span
               className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full font-medium"
               style={{

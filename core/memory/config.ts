@@ -11,6 +11,11 @@ export interface MemoryConfig {
   singleMemoryInjection: boolean;
   customMemoryEnabled: boolean;
   customMemoryPrompt: string;
+  /**
+   * 输入框 `#` 记忆弹窗的默认勾选策略。
+   * 默认 false：弹窗列出记忆但一条都不勾选，避免「打开即注入」。
+   */
+  popupDefaultSelectAll: boolean;
 }
 
 const DEFAULT_CONFIG: MemoryConfig = {
@@ -18,6 +23,7 @@ const DEFAULT_CONFIG: MemoryConfig = {
   singleMemoryInjection: false,
   customMemoryEnabled: false,
   customMemoryPrompt: DEFAULT_CUSTOM_MEMORY_PROMPT,
+  popupDefaultSelectAll: false,
 };
 
 export async function getMemoryConfig(): Promise<MemoryConfig> {
@@ -30,6 +36,7 @@ export async function saveMemoryConfig(config: MemoryConfig): Promise<void> {
     singleMemoryInjection: config.singleMemoryInjection === true,
     customMemoryEnabled: config.customMemoryEnabled === true,
     customMemoryPrompt: normalizeCustomMemoryPrompt(config.customMemoryPrompt),
+    popupDefaultSelectAll: config.popupDefaultSelectAll === true,
   });
 }
 
@@ -41,6 +48,7 @@ export function normalizeMemoryConfig(raw: unknown): MemoryConfig {
       singleMemoryInjection: config.singleMemoryInjection === true,
       customMemoryEnabled: config.customMemoryEnabled === true,
       customMemoryPrompt: normalizeCustomMemoryPrompt(config.customMemoryPrompt),
+      popupDefaultSelectAll: config.popupDefaultSelectAll === true,
     };
   }
   return { ...DEFAULT_CONFIG };

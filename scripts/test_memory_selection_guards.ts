@@ -42,28 +42,21 @@ test('关键词计分饱和：长文本不再按词频无界累加', () => {
   assert.ok(longScore - shortScore < 300, `长短记忆得分差应受控，实际 ${longScore - shortScore}`);
 });
 
-test('单条超大记忆不参与注入（不再撑爆预算）', () => {
-  const giant = makeMemory(999, '长文档'.repeat(4000)); // ≈12k 字符
+test('自动注入按标题计价：长正文不再占预算，注入块也不含正文', () => {
+  const giant = makeMemory(999, '长文档'.repeat(4000)); // ≈12k 字正文
   const single = selectMemories(PROMPT, [giant], { budget: 3000 });
-  assert.equal(single.length, 0, '唯一且超上限的记忆应被跳过');
+  assert.equal(single.length, 1, '正文再长，标题仍可入选');
 
-  const smalls = Array.from({ length: 5 }, (_, i) => makeMemory(i + 1, shortContent + i));
-  const pool = [makeMemory(1000, '长文档'.repeat(4000), { pinned: true }), ...smalls];
-  const selected = selectMemories(PROMPT, pool, { budget: 3000 });
-
-  assert.ok(!selected.some((memory) => memory.id === 1000), '超上限的置顶记忆应被跳过');
-  assert.equal(selected.length, smalls.length, '常规记忆应正常命中');
-  assert.ok(
-    estimateTokens(formatMemoriesBlock(selected)) <= 3000,
-    '注入总量必须落在预算内',
-  );
+  const block = formatMemoriesBlock(single);
+  assert.ok(!block.includes('长文档'.repeat(2)), '注入块只含标题，不含正文');
+  assert.ok(estimateTokens(block) <= 3000, '注入总量必须落在预算内');
 });
 
-test('单条上限按预算比例生效', () => {
+test('单条上限仍生效：标题本身超上限时跳过', () => {
   const cap = Math.floor(3000 * MEMORY_SINGLE_ENTRY_MAX_RATIO); // 1500
-  const oversized = makeMemory(5, 'x'.repeat(Math.ceil((cap + 200) / 0.35)));
+  const oversized = makeMemory(5, '正文', { name: '标'.repeat(Math.ceil((cap + 200) / 0.35)) });
   assert.equal(selectMemories(PROMPT, [oversized], { budget: 3000 }).length, 0);
 
-  const fitting = makeMemory(6, '项目记忆注入链路正常 '.repeat(40)); // ≈ 700 tok < cap
+  const fitting = makeMemory(6, '正文', { name: '项目记忆注入链路正常'.repeat(40) }); // ≈ 700 tok < cap
   assert.equal(selectMemories(PROMPT, [fitting], { budget: 3000 }).length, 1);
 });

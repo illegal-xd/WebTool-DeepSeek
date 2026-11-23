@@ -31,6 +31,15 @@ export default function MemoryCard({ memory, onDelete, onEdit, onTogglePin }: Pr
           <span className="text-[13px] font-medium truncate" style={{ color: 'var(--ds-text)' }}>
             {memory.name}
           </span>
+          {memory.silentInject && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full shrink-0"
+              style={{ background: 'var(--ds-blue-light)', color: 'var(--ds-blue)', border: '1px solid rgba(77,107,254,0.2)' }}
+              title="静默注入：注入完整正文（未开启时只注入标题与 ID）"
+            >
+              静默注入
+            </span>
+          )}
           {memory.pinned && (
             <span className="text-[10px] shrink-0" style={{ color: 'var(--ds-warning)' }}>
               <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">

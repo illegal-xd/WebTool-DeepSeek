@@ -48,6 +48,10 @@ function formatTime(ts: number): string {
   return `${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * @Deprecated 2026-11 起时间轴改为按会话分组（`groupBySession`）。
+ * 保留按天分组实现以便回退；当前渲染不再调用。
+ */
 function groupByDay(events: InjectionEvent[]): Array<{ label: string; items: InjectionEvent[] }> {
   const dayMap = new Map<string, { label: string; items: InjectionEvent[] }>();
   for (const event of events) {
@@ -64,6 +68,43 @@ function groupByDay(events: InjectionEvent[]): Array<{ label: string; items: Inj
     dayMap.set(label, group);
   }
   return [...dayMap.values()].sort((a, b) => (a.items[0].ts > b.items[0].ts ? -1 : 1));
+}
+
+const UNBOUND_SESSION_KEY = '__unbound_session__';
+
+interface SessionGroup {
+  key: string;
+  items: InjectionEvent[];
+  latest: number;
+}
+
+/** 同一会话的注入事件收拢为一组（组内按时间倒序，组间按最近活动倒序）。 */
+function groupBySession(events: InjectionEvent[]): SessionGroup[] {
+  const map = new Map<string, SessionGroup>();
+  for (const event of events) {
+    const key = event.sessionId?.trim() || UNBOUND_SESSION_KEY;
+    const group = map.get(key) ?? { key, items: [], latest: 0 };
+    group.items.push(event);
+    group.latest = Math.max(group.latest, event.ts);
+    map.set(key, group);
+  }
+  return [...map.values()]
+    .map((group) => ({ ...group, items: group.items.toSorted((a, b) => b.ts - a.ts) }))
+    .toSorted((a, b) => b.latest - a.latest);
+}
+
+function sessionLabel(key: string): string {
+  if (key === UNBOUND_SESSION_KEY) return '未关联会话';
+  if (key.length <= 12) return key;
+  return `${key.slice(0, 8)}…${key.slice(-4)}`;
+}
+
+/** 标题前缀（如「技能注入：」）已由左侧彩色类型标签表达，这里剥离避免一行内重复。 */
+function compactTitle(title: string, kindLabel: string): string {
+  const colonPrefix = `${kindLabel}注入：`;
+  if (title.startsWith(colonPrefix)) return title.slice(colonPrefix.length);
+  if (title === `${kindLabel}注入`) return '';
+  return title;
 }
 
 export default function InjectPage() {
@@ -158,19 +199,8 @@ export default function InjectPage() {
           )}
           {events.length > 0 && (
             <div className="space-y-3">
-              {groupByDay(events).map((group) => (
-                <div key={group.label}>
-                  <div className="text-[12px] font-medium text-[var(--ds-text-secondary)] mb-2 flex items-center gap-2">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-[var(--ds-surface)]">{group.label}</span>
-                    <span className="text-[10px] text-[var(--ds-text-tertiary)]">{group.items.length} 次注入</span>
-                  </div>
-                  <div className="space-y-2 pl-2 border-l-2 border-[var(--ds-border)]">
-                    {group.items.map((event) => {
-                      const meta = KIND_META[event.kind];
-                      return <InjectionEventCard key={event.id} event={event} meta={meta} />;
-                    })}
-                  </div>
-                </div>
+              {groupBySession(events).map((group, index) => (
+                <SessionGroupCard key={group.key} group={group} defaultOpen={index === 0} />
               ))}
 
               <div className="flex justify-end">
@@ -299,7 +329,70 @@ function TemplateEditor(props: {
   );
 }
 
-/** 注入事件卡片：支持折叠/展开查看全量注入数据。 */
+/** 会话卡片：头部折叠整组，内部每条注入事件仍可单独展开注入数据。 */
+function SessionGroupCard(props: { group: SessionGroup; defaultOpen: boolean }) {
+  const { group, defaultOpen } = props;
+  const [open, setOpen] = useState(defaultOpen);
+  const isUnbound = group.key === UNBOUND_SESSION_KEY;
+
+  return (
+    <div className="ds-card rounded-2xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors"
+        style={{ background: open ? 'var(--ds-surface)' : 'transparent' }}
+        aria-expanded={open}
+        title={isUnbound ? '未关联会话的注入记录' : group.key}
+      >
+        <span
+          className="w-2 h-2 rounded-full shrink-0"
+          style={{ background: isUnbound ? 'var(--ds-text-tertiary)' : 'var(--ds-blue)' }}
+        />
+        <span className="text-[12px] font-medium truncate min-w-0" style={{ color: 'var(--ds-text)' }}>
+          {isUnbound ? '未关联会话' : `会话 ${sessionLabel(group.key)}`}
+        </span>
+        <span className="text-[10px] shrink-0" style={{ color: 'var(--ds-text-tertiary)' }}>
+          | {group.items.length} 次注入
+        </span>
+        <span className="ml-auto text-[10px] shrink-0 tabular-nums" style={{ color: 'var(--ds-text-tertiary)' }}>
+          {formatTime(group.latest)}
+        </span>
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            color: 'var(--ds-text-tertiary)',
+            transform: open ? 'rotate(90deg)' : 'none',
+            transition: 'transform 0.2s',
+            flexShrink: 0,
+          }}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="px-1.5 pb-1.5 space-y-0.5">
+          {group.items.map((event) => (
+            <InjectionEventCard key={event.id} event={event} meta={KIND_META[event.kind]} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 单条注入事件：类型标签 | 主标题 | 描述 | 时间 一行展示（各自保留主题色），
+ * 点击本行仅展开/收起该条的注入数据，不影响所在会话卡片的折叠状态。
+ */
 function InjectionEventCard(props: {
   event: InjectionEvent;
   meta: { label: string; color: string; bg: string };
@@ -307,43 +400,79 @@ function InjectionEventCard(props: {
   const { event, meta } = props;
   const [expanded, setExpanded] = useState(false);
   const hasPayload = Boolean(event.payload && event.payload.trim());
+  const title = compactTitle(event.title, meta.label);
 
   return (
-    <div className="ds-card rounded-2xl p-3 relative ml-2">
+    <div className="rounded-xl transition-colors" style={{ background: expanded ? 'var(--ds-surface-hover)' : 'transparent' }}>
       <div
         role={hasPayload ? 'button' : undefined}
         tabIndex={hasPayload ? 0 : undefined}
-        className="flex items-start gap-2 w-full text-left"
-        onClick={() => hasPayload && setExpanded((v) => !v)}
-        onKeyDown={(e) => { if (hasPayload && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setExpanded((v) => !v); } }}
+        onClick={() => hasPayload && setExpanded((value) => !value)}
+        onKeyDown={(e) => {
+          if (hasPayload && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            setExpanded((value) => !value);
+          }
+        }}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 w-full min-w-0"
         style={{ cursor: hasPayload ? 'pointer' : 'default' }}
+        title={event.detail ? `${event.title} · ${event.detail}` : event.title}
       >
-        <div className="mt-1 w-2 h-2 rounded-full shrink-0" style={{ background: meta.color }} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 justify-between">
-            <span className="text-[11px] font-medium" style={{ color: meta.color }}>{meta.label}注入</span>
-            <span className="text-[10px] text-[var(--ds-text-tertiary)] shrink-0">{formatTime(event.ts)}</span>
-          </div>
-          <div className="text-[13px] mt-1 break-words" style={{ color: 'var(--ds-text)' }}>{event.title}</div>
-          {event.detail && <div className="text-[11px] mt-1 break-words" style={{ color: 'var(--ds-text-secondary)' }}>{event.detail}</div>}
-          {event.sessionId && <div className="text-[10px] mt-1 truncate" style={{ color: 'var(--ds-text-tertiary)' }}>会话: {event.sessionId}</div>}
-          {hasPayload && (
-            <div className="text-[10px] mt-1.5 flex items-center gap-1" style={{ color: 'var(--ds-text-tertiary)' }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}><polyline points="9 18 15 12 9 6" /></svg>
-              <span>{expanded ? '收起注入数据' : '展开查看全量注入数据'}</span>
-              <span className="text-[9px]">({event.payload!.length} 字符)</span>
-            </div>
-          )}
-        </div>
+        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta.color }} />
+        <span className="text-[11px] font-medium shrink-0" style={{ color: meta.color }}>
+          {meta.label}
+        </span>
+        {title && (
+          <>
+            <span className="text-[10px] shrink-0" style={{ color: 'var(--ds-border-strong, #D1D5DB)' }}>|</span>
+            <span className="text-[12px] truncate min-w-0" style={{ color: 'var(--ds-text)', flexShrink: 2 }}>{title}</span>
+          </>
+        )}
+        {event.detail && (
+          <>
+            <span className="text-[10px] shrink-0" style={{ color: 'var(--ds-border-strong, #D1D5DB)' }}>|</span>
+            <span className="text-[11px] truncate min-w-0" style={{ color: 'var(--ds-text-secondary)' }}>
+              {event.detail}
+            </span>
+          </>
+        )}
+        <span className="ml-auto text-[10px] shrink-0 tabular-nums" style={{ color: 'var(--ds-text-tertiary)' }}>
+          {formatTime(event.ts)}
+        </span>
+        {hasPayload && (
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{
+              color: 'var(--ds-text-tertiary)',
+              transform: expanded ? 'rotate(90deg)' : 'none',
+              transition: 'transform 0.2s',
+              flexShrink: 0,
+            }}
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        )}
       </div>
       {expanded && hasPayload && (
-        <pre className="mt-2 ml-4 p-2.5 rounded-xl text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words overflow-auto" style={{
-          background: 'var(--ds-surface)',
-          color: 'var(--ds-text-secondary)',
-          maxHeight: 400,
-          overflowWrap: 'anywhere',
-          overscrollBehavior: 'contain',
-        }}>{event.payload}</pre>
+        <pre
+          className="mx-2.5 mb-2 p-2.5 rounded-lg text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words overflow-auto"
+          style={{
+            background: 'var(--ds-bg)',
+            color: 'var(--ds-text-secondary)',
+            maxHeight: 400,
+            overflowWrap: 'anywhere',
+            overscrollBehavior: 'contain',
+          }}
+        >
+          {event.payload}
+        </pre>
       )}
     </div>
   );

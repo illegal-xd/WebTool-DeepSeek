@@ -28,6 +28,7 @@ export default function MemoryForm({ initial, onSave, onCancel }: Props) {
     initial?.scope ?? defaultMemoryScope({ type: initial?.type ?? 'topic', pinned: false }),
   );
   const [pinned] = useState(initial?.pinned ?? false);
+  const [silentInject, setSilentInject] = useState(initial?.silentInject === true);
 
   const scopeIndex = SCOPE_OPTIONS.findIndex((o) => o.key === scope);
 
@@ -66,6 +67,7 @@ export default function MemoryForm({ initial, onSave, onCancel }: Props) {
       content: content.trim(),
       tags: tags.split(/[,，]/).map((t) => t.trim()).filter(Boolean),
       pinned: initial?.pinned ?? false,
+      silentInject,
     });
   };
 
@@ -112,6 +114,29 @@ export default function MemoryForm({ initial, onSave, onCancel }: Props) {
         onChange={(e) => setTags(e.target.value)}
         className="ds-input w-full px-3 py-2 text-sm rounded-lg transition-all duration-150"
       />
+
+      {/* 静默注入开关 */}
+      <div className="flex items-center justify-between p-2 rounded-lg border border-dashed" style={{ borderColor: 'var(--ds-border)' }}>
+        <div className="flex flex-col pr-2">
+          <span className="text-xs font-semibold" style={{ color: 'var(--ds-text-secondary)' }}>静默注入</span>
+          <span className="text-[10px]" style={{ color: 'var(--ds-text-tertiary)' }}>
+            开启后注入完整正文；未开启的记忆只注入标题与 ID，正文由记忆工具按需读取
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setSilentInject(!silentInject)}
+          aria-pressed={silentInject}
+          className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+          style={{ backgroundColor: silentInject ? 'var(--ds-blue)' : 'var(--ds-border)' }}
+        >
+          <span
+            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+              silentInject ? 'translate-x-4' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
 
       {/* Weight slider */}
       <div className="pt-1 space-y-2">

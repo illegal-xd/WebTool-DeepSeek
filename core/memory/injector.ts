@@ -50,7 +50,17 @@ interface LightweightMemoryPromptOptions {
   instructionBlock?: string;
   tokenBudget?: number;
   excludeMemoryIds?: Set<number>;
+  /** 兼容字段：首轮已注入工具说明，轻量路径不再重复渲染 schema。 */
   toolDescriptors?: readonly ToolDescriptor[];
+}
+
+/**
+ * 注入工具 schema 时排除内存版 memory_list：记忆标题已由「已知信息」逐条列出，
+ * 再提供列表工具只会重复占上下文。工具本身仍保留（`/memory` 技能与手动调用可用）。
+ */
+function filterInjectedToolDescriptors(descriptors: readonly ToolDescriptor[]): ToolDescriptor[] {
+  // 不论内置还是 MCP，memory_list 都不再注入 schema：标题已在「已知信息」逐条列出。
+  return descriptors.filter((descriptor) => descriptor.name !== 'memory_list');
 }
 
 export function buildAugmentedPrompt(
@@ -59,6 +69,7 @@ export function buildAugmentedPrompt(
   options?: AugmentOptions,
 ): { augmented: string; usedMemoryIds: number[] } {
   const { thinkingEnabled = false, toolDescriptors = DEFAULT_TOOL_DESCRIPTORS, tokenBudget, instructionBlock, presetRelatedMemoryIds } = options ?? {};
+  const injectedDescriptors = filterInjectedToolDescriptors(toolDescriptors);
 
   const promptTokens = estimateTokens(originalPrompt);
   const budget = getMemoryBudget(promptTokens, tokenBudget);
@@ -66,6 +77,7 @@ export function buildAugmentedPrompt(
   const selected = selectMemories(originalPrompt, allMemories, { budget });
   const memBlock = formatMemoriesBlock(selected);
   const relatedBlock = renderPresetRelatedBlock(selected, presetRelatedMemoryIds);
+  const sep = tpl('INSTRUCTION_SEPARATOR', INSTRUCTION_SEPARATOR);
 
   const systemTemplate = thinkingEnabled
     ? tpl('SYSTEM_TEMPLATE_THINKING', SYSTEM_TEMPLATE_THINKING)
@@ -75,11 +87,10 @@ export function buildAugmentedPrompt(
     {
       memories: memBlock,
       memoryContext: renderMemoryContext(memBlock),
-      tools: renderToolSchemas(toolDescriptors),
+      tools: renderToolSchemas(injectedDescriptors),
     },
   );
 
-  const sep = tpl('INSTRUCTION_SEPARATOR', INSTRUCTION_SEPARATOR);
   const userInput = renderUserInputBlock(originalPrompt);
 
   return {
@@ -88,7 +99,7 @@ export function buildAugmentedPrompt(
       + (instructionBlock ? instructionBlock + sep : '')
       + sep
       + userInput
-      + renderToolFormatReminder(toolDescriptors),
+      + renderToolFormatReminder(injectedDescriptors),
     usedMemoryIds: selected.map((m) => m.id!).filter(Boolean),
   };
 }
@@ -149,34 +160,15 @@ export function buildLightweightMemoryPrompt(
     ? selected.filter((m) => m.id == null || !options.excludeMemoryIds!.has(m.id))
     : selected;
   const memBlock = formatMemoriesBlock(fresh);
-  const memoryReaders = filterMemoryReadToolDescriptors(options?.toolDescriptors ?? []);
 
+  // 首轮已注入系统模板（工具 schema + 使用说明），后续轮次只补充新选中的记忆条目，
+  // 不再重复注入「## 使用说明」与工具 schema，避免上下文膨胀。
   const sep = tpl('INSTRUCTION_SEPARATOR', INSTRUCTION_SEPARATOR);
   const parts: string[] = [];
   if (memBlock) parts.push(`## 补充上下文\n\n### 已知信息\n${memBlock}`);
   if (options?.instructionBlock) parts.push(options.instructionBlock);
-  if (memoryReaders.length > 0) parts.push(renderMemoryLookupInstruction(memoryReaders));
   parts.push(renderUserInputBlock(originalPrompt));
   return { augmented: parts.join(sep), usedMemoryIds: fresh.map((m) => m.id!).filter(Boolean) };
-}
-
-function filterMemoryReadToolDescriptors(descriptors: readonly ToolDescriptor[]): ToolDescriptor[] {
-  return descriptors.filter((descriptor) => {
-    if (descriptor.provider.kind !== 'mcp' || descriptor.execution.enabled === false) return false;
-    const tokens = `${descriptor.name} ${descriptor.invocationName}`.toLowerCase().split(/[^a-z0-9]+/);
-    return tokens.includes('memory')
-      && tokens.some((token) => ['list', 'search', 'get', 'read'].includes(token));
-  });
-}
-
-function renderMemoryLookupInstruction(descriptors: readonly ToolDescriptor[]): string {
-  return [
-    '## 记忆查询说明',
-    '当前预设选中的记忆仅限定自动注入范围，不限制访问记忆库中的其他记忆。',
-    '当用户要求查看、查找或引用某条记忆时，请主动使用以下记忆查询工具确认，不要仅依据当前已注入的记忆作答。',
-    renderToolSchemas(descriptors),
-    renderToolFormatReminder(descriptors),
-  ].filter(Boolean).join('\n\n');
 }
 
 export function buildCustomMemoryPrompt(

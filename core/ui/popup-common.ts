@@ -14,7 +14,17 @@ export function injectStyleElement(styleId: string, css: string): void {
   const style = document.createElement('style');
   style.id = styleId;
   style.textContent = css;
-  document.head.appendChild(style);
+
+  const parent = document.head ?? document.documentElement;
+  if (parent) {
+    parent.appendChild(style);
+    return;
+  }
+  // document_start 极早期：head/documentElement 都不可用时等 DOM 就绪再注入。
+  document.addEventListener('DOMContentLoaded', () => {
+    if (document.getElementById(styleId)) return;
+    (document.head ?? document.documentElement)?.appendChild(style);
+  }, { once: true });
 }
 
 /**
