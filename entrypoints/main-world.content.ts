@@ -39,6 +39,7 @@ export default defineContentScript({
       async onToolCallExecuted(call: ToolCall): Promise<ToolCardResult> {
         return new Promise((resolve) => {
           const handler = (event: MessageEvent) => {
+            if (event.source && event.source !== window) return;
             if (
               event.data?.source !== 'WebTool-DeepSeek-content' ||
               event.data?.type !== 'TOOL_CALL_RESULT' ||
@@ -69,12 +70,13 @@ export default defineContentScript({
           records,
         });
       },
-      onResponseComplete(fullText: string) {
+      onResponseComplete(fullText: string, meta?: { aborted?: boolean }) {
         window.postMessage({
           source: 'WebTool-DeepSeek-main',
           type: 'RESPONSE_COMPLETE',
           text: fullText,
           userPrompt: latestUserPrompt,
+          aborted: meta?.aborted === true,
         });
         // @Archived: [2026-11-20] 胶囊的临时排除清理已随功能下线移除。
       },
@@ -102,6 +104,9 @@ export default defineContentScript({
     });
 
     window.addEventListener('message', (event) => {
+      // 只接受本窗口消息：页面里的其它脚本仍可伪造成 content 消息（同源无法靠 origin 拦截），
+      // 至少要排除 iframe / 其它 window 来源，降低伪造 SYNC_STATE / SET_CONTINUATION_PROMPT 的面。
+      if (event.source && event.source !== window) return;
       if (event.data?.source !== 'WebTool-DeepSeek-content') return;
 
       // content 上报的工具块渲染状态（保证渲染效果的可观测出口）。

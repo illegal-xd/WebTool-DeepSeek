@@ -113,6 +113,7 @@ export default function SettingsPage() {
   const [singleMemoryInjection, setSingleMemoryInjection] = useState(false);
   const [customMemoryEnabled, setCustomMemoryEnabled] = useState(false);
   const [popupDefaultSelectAll, setPopupDefaultSelectAll] = useState(false);
+  const [autoContinueEnabled, setAutoContinueEnabled] = useState(false);
   const [customMemoryPrompt, setCustomMemoryPrompt] = useState(DEFAULT_CUSTOM_MEMORY_PROMPT);
   const [featureVisibility, setFeatureVisibilityState] = useState<FeatureVisibility>(() => getFeatureVisibility());
   const [bgEnabled, setBgEnabled] = useState(false);
@@ -166,6 +167,7 @@ export default function SettingsPage() {
       setSingleMemoryInjection(cfg.singleMemoryInjection === true);
       setCustomMemoryEnabled(cfg.customMemoryEnabled === true);
       setPopupDefaultSelectAll(cfg.popupDefaultSelectAll === true);
+      setAutoContinueEnabled(cfg.autoContinueEnabled === true);
       setCustomMemoryPrompt(cfg.customMemoryPrompt?.trim() ? cfg.customMemoryPrompt : DEFAULT_CUSTOM_MEMORY_PROMPT);
     });
   }, []);
@@ -185,7 +187,7 @@ export default function SettingsPage() {
     setMemoryTokenBudget(clamped);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: clamped, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll },
+      payload: { tokenBudget: clamped, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll, autoContinueEnabled },
     });
   };
 
@@ -193,7 +195,7 @@ export default function SettingsPage() {
     setSingleMemoryInjection(enabled);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection: enabled, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll, autoContinueEnabled },
     });
   };
 
@@ -201,7 +203,15 @@ export default function SettingsPage() {
     setPopupDefaultSelectAll(enabled);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll: enabled },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll: enabled, autoContinueEnabled },
+    });
+  };
+
+  const handleAutoContinueChange = async (enabled: boolean) => {
+    setAutoContinueEnabled(enabled);
+    await chrome.runtime.sendMessage({
+      type: 'SET_MEMORY_CONFIG',
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt, popupDefaultSelectAll, autoContinueEnabled: enabled },
     });
   };
 
@@ -211,7 +221,7 @@ export default function SettingsPage() {
     setCustomMemoryPrompt(nextPrompt);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled: enabled, customMemoryPrompt: nextPrompt, popupDefaultSelectAll },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled: enabled, customMemoryPrompt: nextPrompt, popupDefaultSelectAll, autoContinueEnabled },
     });
   };
 
@@ -219,7 +229,7 @@ export default function SettingsPage() {
     setCustomMemoryPrompt(prompt);
     await chrome.runtime.sendMessage({
       type: 'SET_MEMORY_CONFIG',
-      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt: prompt, popupDefaultSelectAll },
+      payload: { tokenBudget: memoryTokenBudget, singleMemoryInjection, customMemoryEnabled, customMemoryPrompt: prompt, popupDefaultSelectAll, autoContinueEnabled },
     });
   };
 
@@ -873,6 +883,33 @@ export default function SettingsPage() {
               </button>
             </div>
           )}
+
+          <div className="border-t pt-3 flex justify-between items-center" style={{ borderColor: 'var(--ds-border)' }}>
+            <div>
+              <div className="text-xs font-medium" style={{ color: 'var(--ds-text)' }}>
+                工具结果自动续聊
+              </div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-tertiary)' }}>
+                开启后工具执行完会自动发送结果继续对话（每条消息最多 2 轮）。自动连发消息与真人操作差异明显，默认关闭
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleAutoContinueChange(!autoContinueEnabled)}
+              aria-pressed={autoContinueEnabled}
+              className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200"
+              style={{
+                background: autoContinueEnabled ? 'var(--ds-blue)' : 'var(--ds-border)',
+              }}
+            >
+              <span
+                className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+                style={{
+                  transform: autoContinueEnabled ? 'translateX(18px)' : 'translateX(0)',
+                }}
+              />
+            </button>
+          </div>
 
           {/*
             @Deprecated 2026-11-20 记忆弹窗已改为单选（一次只插入一条 `#名称`），

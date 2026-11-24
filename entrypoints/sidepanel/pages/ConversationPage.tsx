@@ -5,6 +5,9 @@ import { SVG_PATHS } from '../constants';
 
 type FilterKey = 'all' | 'uncategorized' | string;
 
+/** 单次批量会话操作上限：私有接口批量调用越多越像脚本，超出请分批。 */
+const MAX_BULK_SESSION_OPERATIONS = 50;
+
 const CATEGORY_COLORS = ['#4D6BFE', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#06B6D4'];
 
 function formatDate(ts: number): string {
@@ -125,6 +128,7 @@ export default function ConversationPage() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
+  const [truncated, setTruncated] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [renameTemplate, setRenameTemplate] = useState('{title}-{idx}');
@@ -133,10 +137,15 @@ export default function ConversationPage() {
     setLoading(true);
     setStatus('');
     try {
-      const [sessionList, categoryList] = await Promise.all([
+      const [sessionResponse, categoryList] = await Promise.all([
         chrome.runtime.sendMessage({ type: 'LIST_SESSIONS', payload: { forceRefresh: options?.forceRefresh === true } }),
         chrome.runtime.sendMessage({ type: 'GET_CONVERSATION_CATEGORIES' }),
       ]);
+      // 兼容旧返回（直接是数组）与带截断标记的新返回。
+      const sessionList: ConversationSession[] = Array.isArray(sessionResponse)
+        ? sessionResponse
+        : sessionResponse?.sessions ?? [];
+      setTruncated(Array.isArray(sessionResponse) ? false : sessionResponse?.truncated === true);
       setSessions(mergeSessions([], sessionList ?? []));
       setCategories(categoryList ?? []);
       setSelectedIds(new Set());
@@ -190,6 +199,10 @@ export default function ConversationPage() {
 
   const handleDelete = async (ids: string[]) => {
     if (ids.length === 0) return;
+    if (ids.length > MAX_BULK_SESSION_OPERATIONS) {
+      setStatus(`单次最多删除 ${MAX_BULK_SESSION_OPERATIONS} 个对话，请分批操作`);
+      return;
+    }
     if (!confirm(`确定删除 ${ids.length} 个对话吗？此操作不可撤销。`)) return;
     setLoading(true);
     try {
@@ -215,13 +228,17 @@ export default function ConversationPage() {
     await chrome.runtime.sendMessage({ type: 'RENAME_SESSION', payload: { id, title: nextTitle } });
     setEditingId(null);
     setEditingTitle('');
+    // 只刷新本地列表：每次改名都强制整页 reload DeepSeek 会制造大量重复加载请求。
+    // 页面侧标题会在下一次自然打开/刷新时同步。
     await load();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    await chrome.runtime.sendMessage({ type: 'REFRESH_DEEPSEEK_PAGE' });
   };
 
   const handleBatchRename = async () => {
     if (selectedSessions.length === 0) return;
+    if (selectedSessions.length > MAX_BULK_SESSION_OPERATIONS) {
+      setStatus(`单次最多重命名 ${MAX_BULK_SESSION_OPERATIONS} 个对话，请分批操作`);
+      return;
+    }
     if (!confirm(`确定按模板重命名 ${selectedSessions.length} 个对话吗？`)) return;
     setLoading(true);
     try {
@@ -273,6 +290,10 @@ export default function ConversationPage() {
   const handleExport = async (format: ConversationExportFormat) => {
     const targets = selectedSessions.length > 0 ? selectedSessions : filteredSessions.slice(0, 1);
     if (targets.length === 0) return;
+    if (targets.length > MAX_BULK_SESSION_OPERATIONS) {
+      setStatus(`单次最多导出 ${MAX_BULK_SESSION_OPERATIONS} 个对话，请分批操作`);
+      return;
+    }
     setLoading(true);
     try {
       const exported = [];
@@ -340,6 +361,12 @@ export default function ConversationPage() {
       </div>
 
       {status && <div className="text-[11px] px-3 py-2 rounded-lg ds-info-panel" style={{ color: 'var(--ds-text-secondary)' }}>{status}</div>}
+
+      {truncated && (
+        <div className="text-[11px] px-3 py-2 rounded-lg ds-info-panel" style={{ color: 'var(--ds-text-secondary)' }}>
+          只显示了最近的对话（已达单次拉取上限），更早的对话未列出。可搜索标题确认是否还有更多。
+        </div>
+      )}
 
       <div className="flex items-center justify-between text-[11px]" style={{ color: 'var(--ds-text-tertiary)' }}>
         <span>已选 {selectedIds.size} / 当前 {filteredSessions.length}</span>

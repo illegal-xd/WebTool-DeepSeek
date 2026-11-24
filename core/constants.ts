@@ -1,5 +1,12 @@
 export const DEEPSEEK_API_URL = 'https://chat.deepseek.com/api/v0/chat/completion';
 
+/**
+ * 自动续聊时填入输入框的占位文本。
+ * fetch-hook 只有在请求 prompt 恰好等于该标记时才用挂起的续聊内容替换，
+ * 从而保证用户自己输入的消息永远不会被自动内容顶替。
+ */
+export const CONTINUATION_MARKER = '继续';
+
 export const MEMORY_TOKEN_BUDGET = 3000;
 
 /**

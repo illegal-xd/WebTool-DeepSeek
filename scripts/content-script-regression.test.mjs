@@ -11,12 +11,14 @@ test('does not pass an empty token to classList.add', () => {
   );
 });
 
-test('send button lookup resolves an HTMLElement click target instead of an SVG', () => {
-  const functionSource = source.match(/function findSendButton\(\): HTMLElement \| null \{[\s\S]*?\n\}/)?.[0];
+test('发送按钮只在输入框容器内按语义查找，绝不全局猜按钮', () => {
+  const functionSource = source.match(/function findSendButton\(textarea: HTMLTextAreaElement\): HTMLElement \| null \{[\s\S]*?\n\}/)?.[0];
 
   assert.ok(functionSource, 'findSendButton must exist');
-  assert.match(functionSource, /closest<HTMLElement>\(['"]button, \[role="button"\]['"]\)/);
-  assert.match(functionSource, /instanceof HTMLElement/);
+  assert.match(functionSource, /textarea\.parentElement/, '应以输入框为起点向上找容器');
+  assert.match(functionSource, /closest<HTMLElement>\(['"]button, \[role="button"\]['"]\)/, '命中 SVG 时要解析成真实可点击元素');
+  assert.doesNotMatch(source, /div\[role="button"\] > div > svg/, '不得再用全局通用结构选择器猜按钮');
+  assert.match(source, /const sent = await fillAndSendPrompt\(CONTINUATION_MARKER\)/, '续聊必须使用共享的占位标记');
 });
 
 test('memory_get 结果自动续聊，但「只查看记忆」时跳过', () => {

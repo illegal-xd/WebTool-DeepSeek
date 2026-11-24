@@ -1,9 +1,54 @@
 import type { ConversationMessage, ConversationSession } from '../types';
 
 const API_BASE = 'https://chat.deepseek.com/api/v0';
-const APP_VERSION = '2.0.0';
-const DEFAULT_SESSION_PAGE_SIZE = 50;
-const SESSION_FETCH_PAGE_DELAY_MS = 350;
+/** 页面请求未上报真实版本时的兜底值。 */
+const FALLBACK_APP_VERSION = '2.0.0';
+/** 会话列表最多翻 20 页：这些是私有 Web 接口，无限翻页等同脚本抓取。 */
+const MAX_SESSION_PAGES = 20;
+/** 私有 Web 接口的最小请求间隔：分页/删除/重命名/历史统一排队，避免突发连发。 */
+const API_MIN_INTERVAL_MS = 600;
+/** 额外随机抖动：严格等间隔本身就是机器特征。 */
+const API_JITTER_MS = 900;
+
+let lastApiRequestAt = 0;
+/** FIFO 队列：并发调用按到达顺序排队，不会同时通过节流闸门。 */
+let apiQueue: Promise<void> = Promise.resolve();
+/** 上一次会话列表是否因为页数上限被截断（供 UI 提示，避免「旧会话凭空消失」）。 */
+let lastSessionListTruncated = false;
+
+export function getLastSessionListTruncated(): boolean {
+  return lastSessionListTruncated;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForApiSlot(): Promise<void> {
+  const slot = apiQueue.then(async () => {
+    const gap = API_MIN_INTERVAL_MS + Math.random() * API_JITTER_MS;
+    const wait = lastApiRequestAt + gap - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastApiRequestAt = Date.now();
+  });
+  // 队列本身不因单次失败而卡死
+  apiQueue = slot.catch(() => {});
+  return slot;
+}
+
+/**
+ * 版本号优先取页面自身请求上报的真实值（fetch-hook 会把官方请求头写到 dataset），
+ * 硬编码的版本号与官方客户端不一致，容易被识别为「非官方客户端」。
+ */
+function getAppVersion(): string {
+  try {
+    const observed = document.documentElement.dataset.webtoolDsVersion?.trim();
+    if (observed) return observed;
+  } catch {
+    // 非 DOM 环境（测试）回退到兜底版本
+  }
+  return FALLBACK_APP_VERSION;
+}
 
 interface DeepSeekTokenRecord {
   value?: string;
@@ -26,7 +71,10 @@ async function deepseekApi<T>(path: string, method = 'GET', body?: unknown): Pro
 
   const timezoneOffsetSeconds = String(-new Date().getTimezoneOffset() * 60);
   const clientLocale = navigator.language.replace('-', '_');
+  const appVersion = getAppVersion();
   const requestUrl = `${API_BASE}${path}`;
+
+  await waitForApiSlot();
 
   const response = await fetch(requestUrl, {
     method,
@@ -37,11 +85,11 @@ async function deepseekApi<T>(path: string, method = 'GET', body?: unknown): Pro
       Accept: '*/*',
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
-      'X-App-Version': APP_VERSION,
+      'X-App-Version': appVersion,
       'X-Client-Locale': clientLocale,
       'X-Client-Platform': 'web',
       'X-Client-Timezone-Offset': timezoneOffsetSeconds,
-      'X-Client-Version': APP_VERSION,
+      'X-Client-Version': appVersion,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -114,16 +162,14 @@ function getNextCursorFromPage(sessions: ConversationSession[]): string | null {
   return String(last.updatedAt);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export async function listDeepSeekSessions(): Promise<ConversationSession[]> {
   const allSessions: ConversationSession[] = [];
   let updatedAtCursor: string | null = null;
+  let truncated = false;
 
-  for (let safety = 0; safety < 100; safety++) {
-    let path = `/chat_session/fetch_page?lte_cursor.pinned=false`; // count=${DEFAULT_SESSION_PAGE_SIZE}
+  // 页间隔由 deepseekApi 的统一节流保证，这里只限制最大页数。
+  for (let page = 0; page < MAX_SESSION_PAGES; page++) {
+    let path = '/chat_session/fetch_page?lte_cursor.pinned=false';
     if (updatedAtCursor) {
       path += `&lte_cursor.updated_at=${encodeURIComponent(updatedAtCursor)}`;
     }
@@ -143,9 +189,11 @@ export async function listDeepSeekSessions(): Promise<ConversationSession[]> {
     if (!nextCursor || nextCursor === updatedAtCursor) break;
     updatedAtCursor = nextCursor;
 
-    await sleep(SESSION_FETCH_PAGE_DELAY_MS);
+    // 翻到上限仍有更多：记下截断，让 UI 明确告知「只显示了最近的」。
+    if (page === MAX_SESSION_PAGES - 1) truncated = true;
   }
 
+  lastSessionListTruncated = truncated;
   return allSessions.toSorted((a, b) => b.updatedAt - a.updatedAt);
 }
 

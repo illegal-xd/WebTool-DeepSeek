@@ -1,9 +1,11 @@
 import {
   deleteDeepSeekSession,
   getDeepSeekSessionHistory,
+  getLastSessionListTruncated,
   listDeepSeekSessions,
   renameDeepSeekSession,
 } from '../core/conversation/api';
+import { CONTINUATION_MARKER } from '../core/constants';
 import { DEFAULT_RECOGNIZED_TOOL_TAGS, createToolInvocationCatalog, createXmlToolCallRegex } from '../core/tool';
 import type { MemoryConfig } from '../core/memory/config';
 import { THEME_QUERY, normalizeThemePreference, resolveTheme, type ResolvedTheme, type ThemePreference } from '../core/theme';
@@ -48,7 +50,16 @@ const currentTurnToolNames: string[] = [];
 /** 最近一次用户输入（main-world 捕获），用于区分「只查看」与「带任务」。 */
 let lastUserPrompt = '';
 let continuationRound = 0;
-const MAX_CONTINUATION_ROUNDS = 8;
+/**
+ * 每条用户消息最多自动续聊 2 轮。
+ * 自动连发消息与真人操作差异明显，轮数越多越像脚本；超限后交还给用户。
+ */
+const MAX_CONTINUATION_ROUNDS = 2;
+/**
+ * 自动续聊总开关（设置项，默认关闭）。
+ * 关闭时工具结果只在卡片里展示，不代用户发消息。
+ */
+let autoContinueEnabled = false;
 /** 续聊请求发送后置 true，该请求的 onResponseComplete 之前有效，用于区分手动消息。 */
 let isAutoContinuing = false;
 /** Track raw text of tool calls already executed by TOOL_CALL handler */
@@ -132,6 +143,19 @@ async function fetchAllState() {
   return { memories, skills, presets, modelType, toolDescriptors, memoryConfig, templateOverrides };
 }
 
+/** 记忆配置变化时同步自动续聊开关（默认关闭）。 */
+function applyAutoContinueConfig(config: MemoryConfig | null | undefined) {
+  const enabled = config?.autoContinueEnabled === true;
+  // 从开变关：立刻作废已挂起的续聊，否则它仍会被下一个请求消费掉。
+  if (autoContinueEnabled && !enabled) {
+    clearPendingContinuation();
+    isAutoContinuing = false;
+    continuationRound = 0;
+    currentTurnResults.length = 0;
+  }
+  autoContinueEnabled = enabled;
+}
+
 export default defineContentScript({
   matches: ['*://chat.deepseek.com/*'],
   runAt: 'document_start',
@@ -145,6 +169,7 @@ export default defineContentScript({
     const { memories, skills, presets, modelType, toolDescriptors, memoryConfig, templateOverrides } = state;
 
     currentToolDescriptors = toolDescriptors ?? [];
+    applyAutoContinueConfig(memoryConfig);
     syncToMainWorld({
       memories: memories ?? [],
       skills: skills ?? [],
@@ -158,6 +183,9 @@ export default defineContentScript({
     restorePersistedToolBlocks();
 
     window.addEventListener('message', async (event) => {
+      // 只接受本窗口消息：排除 iframe / 其它 window 伪造的 SYNC_STATE / RESPONSE_COMPLETE。
+      // event.source 在部分上下文可能取不到，此时不做否决，避免误伤同窗口桥接。
+      if (event.source && event.source !== window) return;
       if (event.data?.source !== 'WebTool-DeepSeek-main') return;
 
       switch (event.data.type) {
@@ -212,7 +240,7 @@ export default defineContentScript({
         }
         case 'RESPONSE_COMPLETE': {
           if (typeof event.data.userPrompt === 'string') lastUserPrompt = event.data.userPrompt;
-          await finalizeResponse();
+          await finalizeResponse({ aborted: event.data.aborted === true });
           queueMemoryCandidates(event.data.userPrompt);
           break;
         }
@@ -229,6 +257,9 @@ export default defineContentScript({
           break;
         }
         case 'ROUTE_CHANGED': {
+          // 切换对话后，上一条对话遗留的续聊 prompt 必须作废，否则会被这条对话的首个请求消费掉。
+          clearPendingContinuation();
+          isAutoContinuing = false;
           markRouteRestoreWindow();
           resetRenderGuard();
           clearRenderedToolBlocks();
@@ -263,6 +294,7 @@ export default defineContentScript({
 
     safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
       if (cfg) {
+        applyAutoContinueConfig(cfg);
         window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', ...cfg });
       }
     });
@@ -280,6 +312,7 @@ export default defineContentScript({
         // Also refresh memory config in case it was changed
         safeRuntimeSendMessage<MemoryConfig>({ type: 'GET_MEMORY_CONFIG' }).then((cfg) => {
           if (cfg) {
+            applyAutoContinueConfig(cfg);
             window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', ...cfg });
           }
         });
@@ -290,6 +323,7 @@ export default defineContentScript({
       } else if (message.type === 'MEMORY_CONFIG_UPDATED') {
         const config = message as MemoryConfig;
         if (typeof config.tokenBudget === 'number' && config.tokenBudget > 0) {
+          applyAutoContinueConfig(config);
           window.postMessage({ source: 'WebTool-DeepSeek-content', type: 'MEMORY_CONFIG_UPDATED', ...config });
         }
       } else if (message.type === 'TOOL_DESCRIPTORS_UPDATED') {
@@ -319,8 +353,10 @@ export default defineContentScript({
 
 async function handleConversationRequest(message: { type?: string; payload?: unknown }) {
   switch (message.type) {
-    case 'DS_LIST_SESSIONS':
-      return { ok: true, data: await listDeepSeekSessions() };
+    case 'DS_LIST_SESSIONS': {
+      const sessions = await listDeepSeekSessions();
+      return { ok: true, data: sessions, truncated: getLastSessionListTruncated() };
+    }
     case 'DS_DELETE_SESSION': {
       const { id } = message.payload as { id: string };
       await deleteDeepSeekSession(id);
@@ -1028,6 +1064,9 @@ async function handleToolCall(call: ToolCall, callId: number) {
   const duplicateBlock = findLiveBlockByKey(renderKey);
   if (duplicateBlock) {
     if (duplicateBlock.dataset.completed !== '1') {
+      // 早期占位块没有经过上面两条路径登记 raw，这里必须先登记，
+      // 否则随后到达的 EXECUTE_TOOL_CALL 会把同一调用再执行一次。
+      resolvedCallRaws.add(call.raw);
       try {
         const result = await trackToolExecution(executeToolCall(call));
         updateToolBlockWithResult(duplicateBlock, call, result);
@@ -1179,7 +1218,7 @@ function queueMemoryCandidates(userPrompt: unknown): void {
   void safeRuntimeSendMessage({ type: 'ADD_MEMORY_CANDIDATES', payload: { candidates } });
 }
 
-async function finalizeResponse() {
+async function finalizeResponse(meta?: { aborted?: boolean }) {
   // Auto-collapse all blocks, persist, and sync memory list
   const blocks = document.querySelectorAll<HTMLElement>(`.${BLOCK_CLASS}`);
   const hasBlocks = blocks.length > 0;
@@ -1212,14 +1251,15 @@ async function finalizeResponse() {
   if (viewOnlyMemoryRead) {
     continuationRound = 0;
     currentTurnResults.length = 0;
-    if (hasBlocks) {
-      const sessionId = getCurrentChatSessionId();
-      setTimeout(() => {
-        if (getCurrentChatSessionId() !== sessionId) return;
-        reinsertLostBlocks();
-      }, 1500);
-    }
+    scheduleBlockReinsert(hasBlocks);
   } else if (hadToolCallThisTurn) {
+    // 用户中断 / 请求失败 / 未开启自动续聊：只保留工具结果，不替用户发消息。
+    if (meta?.aborted === true || !autoContinueEnabled) {
+      continuationRound = 0;
+      currentTurnResults.length = 0;
+      scheduleBlockReinsert(hasBlocks);
+      return;
+    }
     if (continuationRound >= MAX_CONTINUATION_ROUNDS) {
       continuationRound = 0;
       currentTurnResults.length = 0;
@@ -1235,16 +1275,18 @@ async function finalizeResponse() {
   } else {
     // 续聊响应中无工具调用 → 任务完成，重置计数。
     continuationRound = 0;
-    if (hasBlocks) {
-      // React 可能在流完成后重渲染 message 子树移除 foreign block；
-      // 延迟检查存活，丢失则从持久化记录重挂。
-      const sessionId = getCurrentChatSessionId();
-      setTimeout(() => {
-        if (getCurrentChatSessionId() !== sessionId) return;
-        reinsertLostBlocks();
-      }, 1500);
-    }
+    scheduleBlockReinsert(hasBlocks);
   }
+}
+
+/** 延迟存活检查：React 可能在流完成后重渲染 message 子树移除外挂块，丢失则从持久化记录重挂。 */
+function scheduleBlockReinsert(hasBlocks: boolean) {
+  if (!hasBlocks) return;
+  const sessionId = getCurrentChatSessionId();
+  setTimeout(() => {
+    if (getCurrentChatSessionId() !== sessionId) return;
+    reinsertLostBlocks();
+  }, 1500);
 }
 
 /** 延迟存活检查：若流完成后的 React 重渲染移除了工具块，从持久化记录重挂。 */
@@ -1254,34 +1296,68 @@ function reinsertLostBlocks() {
 }
 
 /**
- * 自动续聊：设置挂起的 continuation prompt，然后在 DeepSeek 输入框填入简短标记
- * 并触发发送。fetch-hook 拦截该请求时会用挂起的 prompt 替换用户输入，
- * 用户气泡仅显示简短标记文本，工具结果在注入层不显示。
+ * 自动续聊：设置挂起的 continuation prompt，然后在 DeepSeek 输入框填入占位标记
+ * 并触发发送。fetch-hook 拦截该请求时会用挂起的 prompt 替换占位标记，
+ * 用户气泡仅显示标记文本，工具结果在注入层不显示。
+ * 发送失败必须立即丢弃挂起的 prompt，否则后续用户消息会被自动内容顶替。
  */
 async function triggerAutoContinue(prompt: string) {
-  // 1. 通知 main-world 设置挂起的 continuation prompt。
+  // 1. 标记续聊中（TURN_START 时不重置续聊计数）。
+  isAutoContinuing = true;
+
+  // 2. 人类级延迟（2–5s 随机）：流一结束就 250ms 内发下一条是典型的机器人时序。
+  //    严格等间隔同样是机器特征，所以用随机区间。
+  const sessionIdBeforeWait = getCurrentChatSessionId();
+  const turnSeqBeforeWait = turnSeq;
+  await new Promise((resolve) => setTimeout(resolve, 2000 + Math.random() * 3000));
+
+  // 3. 等待期间用户可能切了对话、自己发了消息或关掉了开关：此时放弃，不发任何请求。
+  if (
+    !autoContinueEnabled
+    || getCurrentChatSessionId() !== sessionIdBeforeWait
+    || turnSeq !== turnSeqBeforeWait
+  ) {
+    isAutoContinuing = false;
+    return;
+  }
+
+  // 4. 通知 main-world 设置挂起的 continuation prompt（尽量贴近发送，缩短残留窗口）。
   window.postMessage({
     source: 'WebTool-DeepSeek-content',
     type: 'SET_CONTINUATION_PROMPT',
     prompt,
   }, '*');
 
-  // 2. 标记续聊中（TURN_START 时不重置续聊计数）。
-  isAutoContinuing = true;
+  // 5. 在输入框填入占位标记并发送。
+  const sent = await fillAndSendPrompt(CONTINUATION_MARKER);
+  if (sent) return;
 
-  // 3. 在输入框填入简短标记并发送。
-  await fillAndSendPrompt('继续');
+  // 6. 发送未被确认：只丢弃挂起 prompt 与状态标记，**不清空轮次计数**。
+  // 若实际已发出（校验误判），清零会让上限 2 轮被无限续命——这正是要抑制的行为；
+  // 若确实没发出，用户下一条手动消息会在 TURN_START 自然重置计数。
+  clearPendingContinuation();
+  isAutoContinuing = false;
+}
+
+/** 丢弃挂起的续聊 prompt（发送失败/放弃续聊时调用）。 */
+function clearPendingContinuation() {
+  window.postMessage({
+    source: 'WebTool-DeepSeek-content',
+    type: 'SET_CONTINUATION_PROMPT',
+    prompt: null,
+  }, '*');
 }
 
 /**
- * 填入 DeepSeek 输入框并触发发送。
+ * 填入 DeepSeek 输入框并触发发送，返回是否确认已发出。
  * 优先用 native setter 设值并派发 input 事件触发 React 状态更新；
- * 发送优先尝试发送按钮点击，回退到 Enter 键事件。
+ * 发送优先点击输入区内的发送按钮，找不到就回退 Enter 键。
+ * 发送成功的判据：输入框被清空（DeepSeek 提交后会清空输入）。
  */
-async function fillAndSendPrompt(text: string) {
+async function fillAndSendPrompt(text: string): Promise<boolean> {
   const textarea = document.querySelector<HTMLTextAreaElement>('textarea#chat-input')
     ?? document.querySelector<HTMLTextAreaElement>('textarea');
-  if (!textarea) return;
+  if (!textarea) return false;
 
   const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
   if (setter) {
@@ -1296,33 +1372,60 @@ async function fillAndSendPrompt(text: string) {
   // 等待 React 状态更新使发送按钮可用。
   await new Promise((resolve) => setTimeout(resolve, 250));
 
-  // 尝试点击发送按钮。
-  const sendBtn = findSendButton();
+  const sendBtn = findSendButton(textarea);
   if (sendBtn) {
     sendBtn.click();
-    return;
+  } else {
+    // 回退：模拟 Enter 键提交。
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
   }
 
-  // 回退：模拟 Enter 键提交。
-  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+  // 校验确实发出（最多等 1.2s）。未清空 = 没发出去，交给调用方丢弃挂起 prompt。
+  for (let i = 0; i < 24; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (textarea.value.trim() === '') return true;
+  }
+
+  // 未被确认发出：若输入框还停留在我们写入的文本（含 Enter 被当成换行的情况），
+  // 必须清掉，否则残留的「继续」会被用户下一次发送带出去，成一条真实空消息。
+  if (textarea.value.trim() === text.trim()) {
+    if (setter) setter.call(textarea, '');
+    else textarea.value = '';
+    textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: '' }));
+  }
+  return false;
 }
 
-/** 查找 DeepSeek 发送按钮。选择器可能随版本变化，覆盖多种候选结构。 */
-function findSendButton(): HTMLElement | null {
-  const candidates: Array<string> = [
-    'div[role="button"] > div > svg',
+/**
+ * 查找 DeepSeek 发送按钮。
+ * 只在输入框所在容器内查找带「发送/Send」语义的按钮，
+ * 绝不在全局按通用结构猜按钮——那会点到侧边栏、模型切换等无关控件。
+ * 找不到时返回 null，由调用方回退到 Enter 键。
+ */
+function findSendButton(textarea: HTMLTextAreaElement): HTMLElement | null {
+  const containers: Element[] = [];
+  let node: Element | null = textarea.parentElement;
+  for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+    containers.push(node);
+  }
+
+  const selectors = [
     'button[aria-label*="发送"]',
     'button[aria-label*="Send"]',
-    '.ds-icon-button[type="button"]',
-    'div[role="button"][aria-label*="发送"]',
+    '[role="button"][aria-label*="发送"]',
+    '[role="button"][aria-label*="Send"]',
   ];
-  for (const sel of candidates) {
-    const el = document.querySelector(sel);
-    if (!el) continue;
 
-    // SVG 命中时向上解析真实可点击元素，避免对 SVGElement 调用不存在的 click()。
-    const clickTarget = el.closest<HTMLElement>('button, [role="button"]');
-    if (clickTarget instanceof HTMLElement) return clickTarget;
+  for (const container of containers) {
+    for (const selector of selectors) {
+      const el = container.querySelector<HTMLElement>(selector);
+      if (!el) continue;
+      // SVG 命中时向上解析真实可点击元素，避免对 SVGElement 调用不存在的 click()。
+      const clickTarget = el.closest<HTMLElement>('button, [role="button"]') ?? el;
+      if (!(clickTarget instanceof HTMLElement)) continue;
+      if (clickTarget.getAttribute('aria-disabled') === 'true' || (clickTarget as HTMLButtonElement).disabled) continue;
+      return clickTarget;
+    }
   }
   return null;
 }

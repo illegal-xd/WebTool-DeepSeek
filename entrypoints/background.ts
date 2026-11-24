@@ -54,11 +54,15 @@ import type { BackgroundConfig, ConversationCategory, ConversationMessage, Conve
 
 const NEW_CHAT_URL = 'https://chat.deepseek.com/a/chat';
 const CONVERSATION_SESSION_CACHE_KEY = 'webtool_deepseek_conversation_session_cache';
+/** 单次批量会话操作上限：私有接口的批量调用越多越像脚本，超过请分批。 */
+const MAX_BULK_SESSION_OPERATIONS = 50;
 
 type ConversationSessionCache = {
   date: string;
   sessions: ConversationSession[];
   updatedAt: number;
+  /** 上次拉取是否因页数上限被截断（UI 据此提示「只显示最近的部分」）。 */
+  truncated?: boolean;
 };
 
 export default defineBackground(() => {
@@ -392,25 +396,31 @@ async function handleMessage(
 
     case 'LIST_SESSIONS': {
       const forceRefresh = (message.payload as { forceRefresh?: boolean } | undefined)?.forceRefresh === true;
-      const [sessions, categories] = await Promise.all([
+      const [{ sessions, truncated }, categories] = await Promise.all([
         getCachedConversationSessions(forceRefresh),
         getConversationCategories(),
       ]);
-      return attachCategoryIds(sessions, categories);
+      return { sessions: attachCategoryIds(sessions, categories), truncated };
     }
 
     case 'DELETE_SESSION': {
       const { id } = message.payload as { id: string };
       await sendDeepSeekTabMessage<void>({ type: 'DS_DELETE_SESSION', payload: { id } });
+      await patchConversationSessionCache((sessions) => sessions.filter((session) => session.id !== id));
       await navigateDeepSeekToNewChat();
       return { ok: true };
     }
 
     case 'DELETE_SESSIONS': {
       const { ids } = message.payload as { ids: string[] };
+      if (ids.length > MAX_BULK_SESSION_OPERATIONS) {
+        throw new Error(`单次最多删除 ${MAX_BULK_SESSION_OPERATIONS} 个对话，请分批操作`);
+      }
       for (const id of ids) {
         await sendDeepSeekTabMessage<void>({ type: 'DS_DELETE_SESSION', payload: { id } });
       }
+      const removed = new Set(ids);
+      await patchConversationSessionCache((sessions) => sessions.filter((session) => !removed.has(session.id)));
       await navigateDeepSeekToNewChat();
       return { ok: true };
     }
@@ -418,6 +428,10 @@ async function handleMessage(
     case 'RENAME_SESSION': {
       const { id, title } = message.payload as { id: string; title: string };
       await sendDeepSeekTabMessage<void>({ type: 'DS_RENAME_SESSION', payload: { id, title } });
+      // 不改页面标题就不同步缓存的话，侧边栏读缓存会把刚改的名字显示回旧值。
+      await patchConversationSessionCache((sessions) => sessions.map((session) => (
+        session.id === id ? { ...session, title } : session
+      )));
       return { ok: true };
     }
 
@@ -527,16 +541,26 @@ async function findDeepSeekTab(): Promise<chrome.tabs.Tab | undefined> {
 }
 
 async function sendDeepSeekTabMessage<T>(message: { type: string; payload?: unknown }): Promise<T> {
+  const response = await sendDeepSeekTabMessageWithMeta<T>(message);
+  return response.data as T;
+}
+
+/** 与 sendDeepSeekTabMessage 相同，但保留内容脚本附带的元信息（如列表是否被截断）。 */
+async function sendDeepSeekTabMessageWithMeta<T>(
+  message: { type: string; payload?: unknown },
+): Promise<{ data?: T; truncated?: boolean }> {
   const target = await findDeepSeekTab();
   if (!target?.id) {
     throw new Error('请先打开并登录 DeepSeek 页面');
   }
 
-  const response = await chrome.tabs.sendMessage(target.id, message) as { ok?: boolean; data?: T; error?: string } | undefined;
+  const response = await chrome.tabs.sendMessage(target.id, message) as
+    | { ok?: boolean; data?: T; truncated?: boolean; error?: string }
+    | undefined;
   if (!response?.ok) {
     throw new Error(response?.error || 'DeepSeek 页面通信失败，请刷新页面后重试');
   }
-  return response.data as T;
+  return { data: response.data, truncated: response.truncated };
 }
 
 async function navigateDeepSeekToNewChat() {
@@ -553,17 +577,24 @@ async function refreshDeepSeekTab() {
   await chrome.tabs.reload(target.id, { bypassCache: true });
 }
 
-async function getCachedConversationSessions(forceRefresh: boolean): Promise<ConversationSession[]> {
+async function getCachedConversationSessions(
+  forceRefresh: boolean,
+): Promise<{ sessions: ConversationSession[]; truncated: boolean }> {
   const today = getConversationCacheDateKey();
   const cache = await readConversationSessionCache();
   if (!forceRefresh && cache?.date === today && cache.sessions.length > 0) {
-    return cache.sessions;
+    return { sessions: cache.sessions, truncated: cache.truncated === true };
   }
 
-  const sessions = await sendDeepSeekTabMessage<ConversationSession[]>({ type: 'DS_LIST_SESSIONS' });
-  const nextCache: ConversationSessionCache = { date: today, sessions: sessions ?? [], updatedAt: Date.now() };
+  const response = await sendDeepSeekTabMessageWithMeta<ConversationSession[]>({ type: 'DS_LIST_SESSIONS' });
+  const nextCache: ConversationSessionCache = {
+    date: today,
+    sessions: response.data ?? [],
+    updatedAt: Date.now(),
+    truncated: response.truncated === true,
+  };
   await setSessionValue(CONVERSATION_SESSION_CACHE_KEY, nextCache);
-  return nextCache.sessions;
+  return { sessions: nextCache.sessions, truncated: nextCache.truncated === true };
 }
 
 function getConversationCacheDateKey(date = new Date()): string {
@@ -574,6 +605,23 @@ async function readConversationSessionCache(): Promise<ConversationSessionCache 
   return getSessionValue(CONVERSATION_SESSION_CACHE_KEY, null, normalizeConversationSessionCache);
 }
 
+/**
+ * 改名/删除后同步当天的会话缓存。
+ * 侧边栏默认读缓存（forceRefresh=false），不同步会显示旧标题或已删除条目，
+ * 用户会以为操作失败并反复重试——反而放大请求量。
+ */
+async function patchConversationSessionCache(
+  mutate: (sessions: ConversationSession[]) => ConversationSession[],
+): Promise<void> {
+  const cache = await readConversationSessionCache();
+  if (!cache) return;
+  await setSessionValue(CONVERSATION_SESSION_CACHE_KEY, {
+    ...cache,
+    sessions: mutate(cache.sessions),
+    updatedAt: Date.now(),
+  });
+}
+
 function normalizeConversationSessionCache(raw: unknown): ConversationSessionCache | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const value = raw as Partial<ConversationSessionCache>;
@@ -582,6 +630,7 @@ function normalizeConversationSessionCache(raw: unknown): ConversationSessionCac
     date: value.date,
     sessions: value.sessions.filter((item): item is ConversationSession => Boolean(item) && typeof item === 'object' && typeof (item as ConversationSession).id === 'string'),
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
+    truncated: value.truncated === true,
   };
 }
 

@@ -16,6 +16,11 @@ export interface MemoryConfig {
    * 默认 false：弹窗列出记忆但一条都不勾选，避免「打开即注入」。
    */
   popupDefaultSelectAll: boolean;
+  /**
+   * 工具执行后是否自动发送工具结果继续对话。
+   * 默认 false：自动连发消息属于机器人式行为，需用户显式开启。
+   */
+  autoContinueEnabled: boolean;
 }
 
 const DEFAULT_CONFIG: MemoryConfig = {
@@ -24,6 +29,7 @@ const DEFAULT_CONFIG: MemoryConfig = {
   customMemoryEnabled: false,
   customMemoryPrompt: DEFAULT_CUSTOM_MEMORY_PROMPT,
   popupDefaultSelectAll: false,
+  autoContinueEnabled: false,
 };
 
 export async function getMemoryConfig(): Promise<MemoryConfig> {
@@ -37,6 +43,7 @@ export async function saveMemoryConfig(config: MemoryConfig): Promise<void> {
     customMemoryEnabled: config.customMemoryEnabled === true,
     customMemoryPrompt: normalizeCustomMemoryPrompt(config.customMemoryPrompt),
     popupDefaultSelectAll: config.popupDefaultSelectAll === true,
+    autoContinueEnabled: config.autoContinueEnabled === true,
   });
 }
 
@@ -49,6 +56,7 @@ export function normalizeMemoryConfig(raw: unknown): MemoryConfig {
       customMemoryEnabled: config.customMemoryEnabled === true,
       customMemoryPrompt: normalizeCustomMemoryPrompt(config.customMemoryPrompt),
       popupDefaultSelectAll: config.popupDefaultSelectAll === true,
+      autoContinueEnabled: config.autoContinueEnabled === true,
     };
   }
   return { ...DEFAULT_CONFIG };

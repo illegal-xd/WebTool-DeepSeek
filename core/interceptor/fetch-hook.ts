@@ -1,4 +1,4 @@
-import { DEEPSEEK_API_URL, MEMORY_TOKEN_BUDGET } from '../constants';
+import { CONTINUATION_MARKER, DEEPSEEK_API_URL, MEMORY_TOKEN_BUDGET } from '../constants';
 import { INSTRUCTION_SEPARATOR, MEMORY_BACKGROUND_TEMPLATE } from '../templates';
 import { resolvePresetMention } from '../preset/mention';
 import { TEMPLATE_KEYS, type TemplateOverrides } from '../templates/overrides';
@@ -47,7 +47,8 @@ interface HookState {
   /** 本对话通过 memory_get 读过正文的记忆 id：下一轮补注入全文，避免重复调用。 */
   _memoryContentReadIds: Set<number>;
   onToolCall: (call: ToolCall) => void;
-  onResponseComplete: (fullText: string) => void;
+  /** aborted=true 表示流被中断或请求失败：上层据此禁止自动续聊。 */
+  onResponseComplete: (fullText: string, meta?: { aborted?: boolean }) => void;
   onTurnStart: () => void;
   /** 每轮用户输入（已剥离 @mention）回调，供被动记忆候选提炼使用。 */
   onUserPrompt: (prompt: string) => void;
@@ -171,7 +172,7 @@ function debugLog(event: string, detail: Record<string, unknown>): void {
 }
 
 /** 自动续聊 prompt 的有效期：超时未发送则丢弃，避免回放到新对话。 */
-const CONTINUATION_PROMPT_TTL_MS = 30_000;
+const CONTINUATION_PROMPT_TTL_MS = 10_000;
 
 const CONTEXT_INJECTED_STORAGE_KEY = 'webtool_deepseek_context_injected_memory_ids';
 const MAX_PERSISTED_CONTEXT_SESSIONS = 10;
@@ -372,7 +373,14 @@ export async function reprocessStoredHistory(): Promise<void> {
   }
 }
 
+const HOOK_INSTALLED_FLAG = '__webtoolDeepseekFetchHookInstalled';
+
 export function installFetchHook() {
+  // 幂等守卫：重复安装会让一次响应触发两次 onResponseComplete，进而重复自动续聊。
+  const scope = window as unknown as Record<string, unknown>;
+  if (scope[HOOK_INSTALLED_FLAG] === true) return;
+  scope[HOOK_INSTALLED_FLAG] = true;
+
   hookState._singleInjectionSessionIds = readSingleInjectionSessionIds();
   hookFetch();
   hookXHR();
@@ -381,11 +389,42 @@ export function installFetchHook() {
   hookIndexedDB();
 }
 
+/**
+ * 记录页面自身请求使用的 X-App-Version，供内容脚本直连私有接口时对齐真实版本，
+ * 避免用写死的版本号把自己标记成「非官方客户端」。
+ */
+function recordAppVersionFromHeaders(headers: HeadersInit | undefined): void {
+  if (!headers) return;
+  try {
+    let value: string | null = null;
+    if (headers instanceof Headers) {
+      value = headers.get('X-App-Version');
+    } else if (Array.isArray(headers)) {
+      value = headers.find(([key]) => String(key).toLowerCase() === 'x-app-version')?.[1] ?? null;
+    } else {
+      const record = headers as Record<string, string>;
+      value = record['X-App-Version'] ?? record['x-app-version'] ?? null;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const normalized = value.trim().slice(0, 32);
+      if (document.documentElement.dataset.webtoolDsVersion !== normalized) {
+        document.documentElement.dataset.webtoolDsVersion = normalized;
+      }
+    }
+  } catch {
+    // 捕获失败不影响请求本身
+  }
+}
+
 function hookFetch() {
   const savedFetch = window.fetch;
 
   window.fetch = async function (input: RequestInfo | URL, init?: RequestInit) {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+    if (url.includes('chat.deepseek.com')) {
+      recordAppVersionFromHeaders(input instanceof Request ? input.headers : init?.headers);
+    }
 
     if (!isChatCompletionURL(url) || !init?.body) {
       return savedFetch.call(this, input, init);
@@ -404,10 +443,18 @@ function hookXHR() {
   const xhrUrls = new WeakMap<XMLHttpRequest, string>();
   const origOpen = XMLHttpRequest.prototype.open;
   const origSend = XMLHttpRequest.prototype.send;
+  const origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
 
   XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]) {
     xhrUrls.set(this, typeof url === 'string' ? url : url.href);
     return origOpen.apply(this, [method, url as string, ...rest] as Parameters<typeof origOpen>);
+  };
+
+  XMLHttpRequest.prototype.setRequestHeader = function (this: XMLHttpRequest, name: string, value: string) {
+    if (String(name).toLowerCase() === 'x-app-version' && typeof value === 'string' && value.trim()) {
+      document.documentElement.dataset.webtoolDsVersion = value.trim().slice(0, 32);
+    }
+    return origSetRequestHeader.call(this, name, value);
   };
 
   XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
@@ -509,10 +556,11 @@ export function modifyRequestBody(bodyStr: string): string | null {
   }
 
   // 自动续聊请求：用挂起的 continuation prompt 替换用户输入，跳过常规记忆/预设注入。
-  // 仅在「同一对话的紧接着的请求」内生效；新对话或超时立即丢弃。
+  // 仅当请求 prompt 就是自动填入的占位标记时才替换——用户自己输入的内容永不被顶替。
   if (hookState.pendingContinuationPrompt) {
     const fresh = Date.now() - hookState.pendingContinuationAt < CONTINUATION_PROMPT_TTL_MS;
-    if (fresh && !isNewConversation) {
+    const isContinuationMarker = rawPrompt.trim() === CONTINUATION_MARKER;
+    if (fresh && isContinuationMarker && !isNewConversation) {
       body.prompt = hookState.pendingContinuationPrompt;
       hookState.pendingContinuationPrompt = null;
       hookState.pendingContinuationAt = 0;
@@ -904,13 +952,37 @@ function resolveSkills(skillName: string, args: string): ResolvedSkills | null {
 // Detects <memory_save>, <memory_update>, <memory_delete> XML blocks
 // in SSE stream chunks and handles chunk-boundary truncation.
 
-function notifyNewToolCalls(fullText: string, alreadyNotified: number): number {
-  const calls = extractToolCalls(fullText, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
-  for (let i = alreadyNotified; i < calls.length; i++) {
-    debugLog('tool-call', { name: calls[i].name, total: calls.length, textChars: fullText.length });
-    hookState.onToolCall(calls[i]);
+/** 一次工具调用的稳定指纹：同一次调用在流式重解析中只执行一次。 */
+function toolCallFingerprint(call: ToolCall): string {
+  const raw = (call.raw ?? '').trim();
+  if (raw) return raw;
+  try {
+    return `${call.name}:${JSON.stringify(call.payload ?? {})}`;
+  } catch {
+    return `${call.name}:${String(call.payload)}`;
   }
-  return calls.length;
+}
+
+/**
+ * 通知新出现的工具调用。
+ * 去重键 = 调用指纹 + 该指纹在本次解析结果中的序号：
+ * - 流式重解析会重复解析同一调用 → 序号相同 → 不重复执行；
+ * - 同一响应内合法出现两次相同调用（DSML 块内多条 invoke 共用同一个 raw）→ 序号不同 → 都会执行。
+ * 只按下标或只按指纹都会出错。
+ */
+function notifyNewToolCalls(fullText: string, notified: Set<string>): void {
+  const calls = extractToolCalls(fullText, { descriptors: hookState.toolDescriptors, recognizedTags: hookState.recognizedToolTags });
+  const occurrences = new Map<string, number>();
+  for (const call of calls) {
+    const fingerprint = toolCallFingerprint(call);
+    const ordinal = (occurrences.get(fingerprint) ?? 0) + 1;
+    occurrences.set(fingerprint, ordinal);
+    const key = `${fingerprint}#${ordinal}`;
+    if (notified.has(key)) continue;
+    notified.add(key);
+    debugLog('tool-call', { name: call.name, total: calls.length, textChars: fullText.length });
+    hookState.onToolCall(call);
+  }
 }
 
 function filterSSEChunkForDisplay(chunk: string, state: ToolStreamFilterState): string {
@@ -1009,8 +1081,10 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let fullText = '';
-  let notifiedCount = 0;
+  const notifiedCalls = new Set<string>();
   let completed = false;
+  /** 中断（用户点停止）或请求失败：保留工具卡片，但禁止自动续聊。 */
+  let aborted = response.ok === false;
   let rawSSEAccumulator = '';
   const displayFilterState: ToolStreamFilterState = {
     sseRemainder: '',
@@ -1023,61 +1097,73 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
   const finalizeIfNeeded = () => {
     if (completed) return;
     completed = true;
-    notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
-    hookState.onResponseComplete(fullText);
+    // 中断/失败时不再执行流里残留的工具调用：用户点「停止」后不应产生保存/删除副作用。
+    if (!aborted) notifyNewToolCalls(fullText, notifiedCalls);
+    hookState.onResponseComplete(fullText, { aborted });
   };
 
   const stream = new ReadableStream({
     async start(controller) {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          const flushed = flushFilteredSSE(displayFilterState);
-          if (flushed) {
-            controller.enqueue(encoder.encode(flushed));
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            const flushed = flushFilteredSSE(displayFilterState);
+            if (flushed) {
+              controller.enqueue(encoder.encode(flushed));
+            }
+            // Flush any remaining raw SSE data not yet added to fullText
+            if (rawSSEAccumulator.trim()) {
+              const tailEvents = parseSSEChunk(rawSSEAccumulator);
+              for (const event of tailEvents) {
+                const parsed = parseSSEData(event.data);
+                if (!parsed) continue;
+                const text = extractTextFromParsed(parsed);
+                if (text) fullText += text;
+              }
+              rawSSEAccumulator = '';
+            }
+            finalizeIfNeeded();
+            controller.close();
+            break;
           }
-          // Flush any remaining raw SSE data not yet added to fullText
-          if (rawSSEAccumulator.trim()) {
-            const tailEvents = parseSSEChunk(rawSSEAccumulator);
-            for (const event of tailEvents) {
+
+          const chunk = decoder.decode(value, { stream: true });
+          const filteredChunk = filterSSEChunkForDisplay(chunk, displayFilterState);
+          if (filteredChunk) {
+            controller.enqueue(encoder.encode(filteredChunk));
+          }
+
+          // Accumulate raw SSE data to handle events split across chunks
+          rawSSEAccumulator += chunk;
+          const splitIdx = rawSSEAccumulator.lastIndexOf('\n\n');
+          if (splitIdx !== -1) {
+            const completeData = rawSSEAccumulator.slice(0, splitIdx + 2);
+            rawSSEAccumulator = rawSSEAccumulator.slice(splitIdx + 2);
+            const events = parseSSEChunk(completeData);
+            for (const event of events) {
               const parsed = parseSSEData(event.data);
               if (!parsed) continue;
               const text = extractTextFromParsed(parsed);
-              if (text) fullText += text;
-            }
-            rawSSEAccumulator = '';
-          }
-          finalizeIfNeeded();
-          controller.close();
-          break;
-        }
+              if (text) {
+                fullText += text;
+                notifyNewToolCalls(fullText, notifiedCalls);
+              }
 
-        const chunk = decoder.decode(value, { stream: true });
-        const filteredChunk = filterSSEChunkForDisplay(chunk, displayFilterState);
-        if (filteredChunk) {
-          controller.enqueue(encoder.encode(filteredChunk));
-        }
-
-        // Accumulate raw SSE data to handle events split across chunks
-        rawSSEAccumulator += chunk;
-        const splitIdx = rawSSEAccumulator.lastIndexOf('\n\n');
-        if (splitIdx !== -1) {
-          const completeData = rawSSEAccumulator.slice(0, splitIdx + 2);
-          rawSSEAccumulator = rawSSEAccumulator.slice(splitIdx + 2);
-          const events = parseSSEChunk(completeData);
-          for (const event of events) {
-            const parsed = parseSSEData(event.data);
-            if (!parsed) continue;
-            const text = extractTextFromParsed(parsed);
-            if (text) {
-              fullText += text;
-              notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
-            }
-
-            if (!completed && isStreamFinishedFromParsed(parsed)) {
-              finalizeIfNeeded();
+              if (!completed && isStreamFinishedFromParsed(parsed)) {
+                finalizeIfNeeded();
+              }
             }
           }
+        }
+      } catch (error) {
+        // 用户中断 / 网络错误：标记 aborted 后照常收尾（只落盘，不续聊）
+        aborted = true;
+        finalizeIfNeeded();
+        try {
+          controller.error(error);
+        } catch {
+          // 流已被页面侧关闭，无需再报错
         }
       }
     },
@@ -1093,15 +1179,23 @@ async function interceptFetchResponse(responsePromise: Promise<Response>): Promi
 function setupXHRResponseInterceptor(xhr: XMLHttpRequest) {
   let fullText = '';
   let lastLen = 0;
-  let notifiedCount = 0;
+  const notifiedCalls = new Set<string>();
   let completed = false;
+  /** 中断或 HTTP 失败：禁止自动续聊。 */
+  let aborted = false;
 
   const finalizeIfNeeded = () => {
     if (completed) return;
     completed = true;
-    notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
-    hookState.onResponseComplete(fullText);
+    const failed = aborted || xhr.status >= 400;
+    // 中断/失败时不再执行流里残留的工具调用，避免「点了停止仍然写记忆」。
+    if (!failed) notifyNewToolCalls(fullText, notifiedCalls);
+    hookState.onResponseComplete(fullText, { aborted: failed });
   };
+
+  xhr.addEventListener('abort', () => {
+    aborted = true;
+  });
 
   xhr.addEventListener('readystatechange', function () {
     if (xhr.readyState === 3 || xhr.readyState === 4) {
@@ -1116,7 +1210,7 @@ function setupXHRResponseInterceptor(xhr: XMLHttpRequest) {
           const text = extractTextFromParsed(parsed);
           if (text) {
             fullText += text;
-            notifiedCount = notifyNewToolCalls(fullText, notifiedCount);
+            notifyNewToolCalls(fullText, notifiedCalls);
           }
         }
       }
@@ -1149,8 +1243,12 @@ function hookHistoryFetch() {
         if (records.length > 0) {
           hookState.onToolCallsRestored(records);
         }
+        // 重建响应时必须剔除编码/长度头：body 已是明文 JSON，沿用原头会让页面按 gzip 解析而报错。
+        const headers = new Headers(response.headers);
+        headers.delete('content-encoding');
+        headers.delete('content-length');
         return new Response(JSON.stringify(cleaned), {
-          headers: response.headers,
+          headers,
           status: response.status,
           statusText: response.statusText,
         });
